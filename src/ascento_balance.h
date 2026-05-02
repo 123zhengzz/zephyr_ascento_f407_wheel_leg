@@ -1,0 +1,90 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "bmi088.h"
+#include "dji_m3508.h"
+
+typedef struct {
+	bool calibrated;
+	float wheel_radius_m;
+	float wheel_base_m;
+	float total_mass_kg;
+	float body_com_height_m;
+	float body_pitch_inertia_kg_m2;
+	float wheel_inertia_kg_m2;
+	float current_ma_to_wheel_torque_nm;
+	float leg_length_min_m;
+	float leg_length_max_m;
+	float leg_length_default_m;
+	float left_joint_at_min_leg_rad;
+	float left_joint_at_max_leg_rad;
+	float right_joint_at_min_leg_rad;
+	float right_joint_at_max_leg_rad;
+	float k_pitch;
+	float k_pitch_rate;
+	float k_position;
+	float k_velocity;
+	float k_yaw_rate;
+	float k_roll_to_leg_m_per_rad;
+} ascento_balance_params_t;
+
+typedef struct {
+	bool enable_request;
+	bool wheel_feedback_ok;
+	float dt_s;
+	float target_forward_speed_mps;
+	float target_yaw_rate_rad_s;
+	float target_leg_length_m;
+	float target_pitch_rad;
+	float left_joint_position_rad;
+	float right_joint_position_rad;
+	float left_joint_velocity_rad_s;
+	float right_joint_velocity_rad_s;
+	bmi088_sample_t imu;
+	dji_m3508_motor_t left_wheel;
+	dji_m3508_motor_t right_wheel;
+} ascento_balance_input_t;
+
+typedef struct {
+	bool active;
+	bool params_ready;
+	bool faulted;
+	int16_t left_wheel_current;
+	int16_t right_wheel_current;
+	float left_joint_position_rad;
+	float right_joint_position_rad;
+	float joint_velocity_limit_rad_s;
+	float body_position_m;
+	float body_velocity_mps;
+	float pitch_rad;
+	float pitch_rate_rad_s;
+	float balance_torque_nm;
+	float yaw_torque_nm;
+	float left_leg_length_m;
+	float right_leg_length_m;
+} ascento_balance_output_t;
+
+typedef struct {
+	bool initialized;
+	float body_position_m;
+	float body_velocity_lpf_mps;
+	float yaw_rate_lpf_rad_s;
+	float left_leg_length_m;
+	float right_leg_length_m;
+} ascento_balance_state_t;
+
+extern const ascento_balance_params_t ascento_balance_default_params;
+
+void ascento_balance_init(ascento_balance_state_t *state);
+void ascento_balance_reset(ascento_balance_state_t *state);
+bool ascento_balance_params_ready(const ascento_balance_params_t *params);
+float ascento_balance_leg_length_from_joint(const ascento_balance_params_t *params,
+					    bool left_leg, float joint_rad);
+float ascento_balance_joint_from_leg_length(const ascento_balance_params_t *params,
+					    bool left_leg, float leg_length_m);
+void ascento_balance_update(ascento_balance_state_t *state,
+			    const ascento_balance_params_t *params,
+			    const ascento_balance_input_t *input,
+			    ascento_balance_output_t *output);

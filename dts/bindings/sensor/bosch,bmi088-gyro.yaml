@@ -1,0 +1,5 @@
+description: Bosch BMI088 gyroscope chip-select used by the application
+
+compatible: "bosch,bmi088-gyro"
+
+include: spi-device.yaml

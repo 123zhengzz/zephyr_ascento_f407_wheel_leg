@@ -1,0 +1,6 @@
+board:
+  name: dji_f407igh6_c
+  full_name: DJI RoboMaster Development Board Type C
+  vendor: dji
+  socs:
+    - name: stm32f407xx

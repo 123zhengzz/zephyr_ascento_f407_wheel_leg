@@ -1,0 +1,6 @@
+if BOARD_DJI_F407IGH6_C
+
+config BOARD
+	default "dji_f407igh6_c"
+
+endif

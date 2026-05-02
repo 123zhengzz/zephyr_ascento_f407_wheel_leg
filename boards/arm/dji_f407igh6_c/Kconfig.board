@@ -1,0 +1,3 @@
+config BOARD_DJI_F407IGH6_C
+	bool "DJI RoboMaster Development Board Type C"
+	depends on SOC_STM32F407XG

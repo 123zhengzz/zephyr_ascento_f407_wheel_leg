@@ -1,0 +1,2 @@
+config BOARD_DJI_F407IGH6_C
+	select SOC_STM32F407XG

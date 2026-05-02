@@ -1,0 +1,5 @@
+description: Bosch BMI088 accelerometer chip-select used by the application
+
+compatible: "bosch,bmi088-accel"
+
+include: spi-device.yaml

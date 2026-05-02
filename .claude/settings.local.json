@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./scripts/serial.sh)",
+      "Bash(sg dialout *)",
+      "Bash(stty -F /dev/ttyUSB0 115200 -echo)",
+      "Read(//dev/**)"
+    ]
+  }
+}
