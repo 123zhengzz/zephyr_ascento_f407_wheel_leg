@@ -159,11 +159,13 @@ STM32F4xx - Rev: unknown (0x101f)
 
 ```bash
 # 编译 + 烧录 (推荐)
-./scripts/build.sh && ./scripts/flash.sh
 
+./scripts/build.sh && ./scripts/flash.sh
 # 仅烧录 (已编译过)
 ./scripts/flash.sh
 
 # 串口连接
 ./scripts/serial.sh
 ```
+./scripts/openocd_mass_erase_flash.sh
+newgrp dialout

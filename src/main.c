@@ -242,8 +242,10 @@ static void control_thread(void *p1, void *p2, void *p3)
 				.joints_enabled = true,
 				.left_wheel_current = 0,
 				.right_wheel_current = 0,
-				.left_joint_position_rad = APP_LEFT_LEG_MIN_RAD,
-				.right_joint_position_rad = APP_RIGHT_LEG_MAX_RAD,
+				.left_joint_position_rad =
+					APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD,
+				.right_joint_position_rad =
+					APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD,
 				.joint_velocity_limit_rad_s =
 					APP_LEG_VEL_LIMIT_RAD_S,
 			};

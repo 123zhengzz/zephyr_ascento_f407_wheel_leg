@@ -96,11 +96,11 @@ motor dm diag right      # 右关节全寄存器诊断
 
 电机不动的深层排查过程详见 [docs/deepseek_4340_debug.md](docs/deepseek_4340_debug.md) 第 10 章。
 
-Motor wiring and smoke-test commands are documented in:
+Motor wiring, smoke-test commands, and Ascento model notes are documented in:
 
 - `README_ZH.md`
 - `docs/MOTOR_DEBUG_README_ZH.md`
-- `docs/ASCENTO_BALANCE_REQUIREMENTS_ZH.md`
+- `docs/ASCENTO_README_ZH.md`
 
 ## Build & Flash
 

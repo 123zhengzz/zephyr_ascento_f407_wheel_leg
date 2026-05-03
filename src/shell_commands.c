@@ -311,7 +311,7 @@ static int cmd_robot_zero(const struct shell *sh, size_t argc, char **argv)
 
 	const float zero = strtof(argv[1], NULL);
 	control_set_angle_zero(zero);
-	shell_print(sh, "pitch zero set to %.2f deg", (double)zero);
+	shell_print(sh, "balance zero set to %.2f deg", (double)zero);
 	return 0;
 }
 
@@ -335,6 +335,56 @@ static int cmd_robot_status(const struct shell *sh, size_t argc, char **argv)
 		    st.left_wheel_current, st.right_wheel_current,
 		    (double)st.left_joint_position_rad,
 		    (double)st.right_joint_position_rad, st.jump_phase);
+	return 0;
+}
+
+static int cmd_robot_pid(const struct shell *sh, size_t argc, char **argv)
+{
+	control_pid_balance_params_t params;
+
+	control_get_pid_balance_params(&params);
+
+	if (argc == 1) {
+		shell_print(sh,
+			    "pid angle_p=%.2f angle_i=%.2f angle_d=%.2f gyro_p=%.2f distance_p=%.2f speed_p=%.2f limit=%d mA",
+			    (double)params.angle_p, (double)params.angle_i,
+			    (double)params.angle_d, (double)params.gyro_p,
+			    (double)params.distance_p, (double)params.speed_p,
+			    params.current_limit_ma);
+		return 0;
+	}
+
+	if (argc < 3 || !parse_float_arg(argv[1], &params.angle_p) ||
+	    !parse_float_arg(argv[2], &params.gyro_p)) {
+		shell_error(sh,
+			    "usage: robot pid [angle_p gyro_p [distance_p] [speed_p] [limit_mA]]");
+		return -EINVAL;
+	}
+
+	if (argc > 3 && !parse_float_arg(argv[3], &params.distance_p)) {
+		shell_error(sh, "invalid distance_p");
+		return -EINVAL;
+	}
+	if (argc > 4 && !parse_float_arg(argv[4], &params.speed_p)) {
+		shell_error(sh, "invalid speed_p");
+		return -EINVAL;
+	}
+	if (argc > 5) {
+		int32_t current_limit_ma;
+		if (!parse_i32(argv[5], &current_limit_ma)) {
+			shell_error(sh, "invalid limit_mA");
+			return -EINVAL;
+		}
+		params.current_limit_ma = (int16_t)current_limit_ma;
+	}
+
+	control_set_pid_balance_params(&params);
+	control_get_pid_balance_params(&params);
+	shell_print(sh,
+		    "pid set angle_p=%.2f gyro_p=%.2f distance_p=%.2f speed_p=%.2f limit=%d mA",
+		    (double)params.angle_p, (double)params.gyro_p,
+		    (double)params.distance_p, (double)params.speed_p,
+		    params.current_limit_ma);
 	return 0;
 }
 
@@ -1145,6 +1195,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(zero, NULL, "robot zero <pitch_zero_deg>",
 		      cmd_robot_zero, 2, 0),
 	SHELL_CMD_ARG(status, NULL, "robot status", cmd_robot_status, 1, 0),
+	SHELL_CMD_ARG(pid, NULL,
+		      "robot pid [angle_p gyro_p [distance_p] [speed_p] [limit_mA]]",
+		      cmd_robot_pid, 1, 5),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(robot, &robot_cmds, "wheel-leg robot control", NULL);

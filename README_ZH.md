@@ -47,16 +47,10 @@ docs/FLASH_TROUBLESHOOTING_README_ZH.md
 docs/STLINK_4PIN_FLASH_README_ZH.md
 ```
 
-暂不启用的 Ascento 串联腿平衡控制代码和所需物理数据见：
+Ascento 控制模型总 README，包含已写入参数、缺失数据、测量方法、仿真任务和接入步骤：
 
 ```text
-docs/ASCENTO_BALANCE_REQUIREMENTS_ZH.md
-```
-
-已经写入模型的参数、缺失参数和逐项测量方法见：
-
-```text
-docs/ASCENTO_MODEL_PARAMETER_MEASUREMENT_GUIDE_ZH.md
+docs/ASCENTO_README_ZH.md
 ```
 
 ## 0. 安全准备

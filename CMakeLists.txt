@@ -10,7 +10,7 @@ target_include_directories(app PRIVATE src)
 target_sources(app PRIVATE
   src/main.c
   src/pid.c
-  src/control.c
+  src/pid_balance_control.c
   src/ascento_balance.c
   src/dji_m3508.c
   src/dm4340.c

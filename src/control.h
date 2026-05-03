@@ -47,6 +47,16 @@ typedef struct {
 	int jump_phase;
 } control_status_t;
 
+typedef struct {
+	float angle_p;
+	float angle_i;
+	float angle_d;
+	float gyro_p;
+	float distance_p;
+	float speed_p;
+	int16_t current_limit_ma;
+} control_pid_balance_params_t;
+
 void control_init(void);
 void control_set_enable(bool enable);
 void control_set_height(int height);
@@ -56,6 +66,9 @@ void control_request_jump(void);
 void control_stop_motion(void);
 void control_set_angle_zero(float zero_deg);
 void control_get_status(control_status_t *status);
+void control_get_pid_balance_params(control_pid_balance_params_t *params);
+void control_set_pid_balance_params(
+	const control_pid_balance_params_t *params);
 
 void control_step(const bmi088_sample_t *imu, const dji_m3508_motor_t *left,
 		  const dji_m3508_motor_t *right, float dt_s,
