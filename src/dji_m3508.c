@@ -14,6 +14,8 @@ LOG_MODULE_REGISTER(dji_m3508, LOG_LEVEL_INF);
 #define VESC_CAN_PACKET_SET_CURRENT 1U
 #define VESC_CAN_PACKET_SET_RPM 3U
 #define VESC_CAN_PACKET_STATUS 9U
+#define VESC_CAN_PACKET_STATUS_4 16U
+#define VESC_CAN_PACKET_STATUS_5 27U
 
 static int16_t be_i16(const uint8_t *data)
 {
@@ -42,6 +44,30 @@ static uint32_t vesc_ext_id(uint8_t controller_id, uint32_t packet_id)
 	return (packet_id << 8) | controller_id;
 }
 
+static float torque_coeff_for_id(uint8_t id)
+{
+	if (id == APP_WHEEL_LEFT_ID) {
+		return APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM;
+	}
+	if (id == APP_WHEEL_RIGHT_ID) {
+		return APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM;
+	}
+
+	return APP_ASCENTO_CURRENT_MA_TO_WHEEL_TORQUE_NM;
+}
+
+static int wheel_forward_sign_for_id(uint8_t id)
+{
+	if (id == APP_WHEEL_LEFT_ID) {
+		return APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN;
+	}
+	if (id == APP_WHEEL_RIGHT_ID) {
+		return APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN;
+	}
+
+	return 1;
+}
+
 static bool command_slot_active(const dji_m3508_bus_t *bus, size_t slot)
 {
 	return slot < bus->command_id_count && bus->command_id[slot] != 0U;
@@ -64,7 +90,15 @@ int dji_m3508_send_current(dji_m3508_bus_t *bus, uint8_t id,
 	};
 
 	put_be_i32(&frame.data[0], milliamps);
-	return can_send(bus->can, &frame, K_MSEC(2), NULL, NULL);
+	const int ret = can_send(bus->can, &frame, K_MSEC(2), NULL, NULL);
+	if (ret == 0) {
+		k_spinlock_key_t key = k_spin_lock(&bus->lock);
+		bus->motor[id].command_current_ma = current_ma;
+		bus->motor[id].last_command_ms = k_uptime_get();
+		k_spin_unlock(&bus->lock, key);
+	}
+
+	return ret;
 }
 
 int dji_m3508_send_rpm(dji_m3508_bus_t *bus, uint8_t id, int32_t rpm)
@@ -83,23 +117,9 @@ int dji_m3508_send_rpm(dji_m3508_bus_t *bus, uint8_t id, int32_t rpm)
 	return can_send(bus->can, &frame, K_MSEC(2), NULL, NULL);
 }
 
-static void dji_m3508_rx_cb(const struct device *dev, struct can_frame *frame,
-			    void *user_data)
+static void parse_status_1(dji_m3508_bus_t *bus, uint8_t id,
+			   const struct can_frame *frame)
 {
-	ARG_UNUSED(dev);
-
-	dji_m3508_bus_t *bus = user_data;
-	if ((frame->flags & CAN_FRAME_IDE) == 0 || frame->dlc < 8) {
-		return;
-	}
-
-	const uint8_t packet_id = (uint8_t)((frame->id >> 8) & 0xffU);
-	const uint8_t id = (uint8_t)(frame->id & 0xffU);
-
-	if (packet_id != VESC_CAN_PACKET_STATUS) {
-		return;
-	}
-
 	const int32_t erpm = be_i32(&frame->data[0]);
 	const int16_t current_deciamp = be_i16(&frame->data[4]);
 	const int16_t duty_permille = be_i16(&frame->data[6]);
@@ -115,13 +135,27 @@ static void dji_m3508_rx_cb(const struct device *dev, struct can_frame *frame,
 	next.online = true;
 	next.erpm = erpm;
 	next.speed_rpm = (int32_t)lrintf(motor_rpm);
-	next.current_ma = (int32_t)lrintf((float)current_deciamp * 100.0f);
+	next.motor_current_ma = (int32_t)lrintf((float)current_deciamp * 100.0f);
+	next.current_ma = next.motor_current_ma;
+	next.current_ma_to_wheel_torque_nm = torque_coeff_for_id(id);
+	next.estimated_wheel_torque_nm =
+		(float)(next.motor_current_ma * wheel_forward_sign_for_id(id)) *
+		next.current_ma_to_wheel_torque_nm;
 	next.duty = (float)duty_permille / 1000.0f;
 	next.last_update_ms = now_ms;
 	next.speed_rad_s = speed_rad_s;
 
 	k_spinlock_key_t key = k_spin_lock(&bus->lock);
 	dji_m3508_motor_t *motor = &bus->motor[id];
+	next.command_current_ma = motor->command_current_ma;
+	next.last_command_ms = motor->last_command_ms;
+	next.input_current_ma = motor->input_current_ma;
+	next.input_voltage_mv = motor->input_voltage_mv;
+	next.tachometer = motor->tachometer;
+	next.fet_temperature_cdeg = motor->fet_temperature_cdeg;
+	next.motor_temperature_cdeg = motor->motor_temperature_cdeg;
+	next.last_status4_update_ms = motor->last_status4_update_ms;
+	next.last_status5_update_ms = motor->last_status5_update_ms;
 
 	if (motor->initialized && motor->last_update_ms > 0) {
 		const float dt_s = (float)(now_ms - motor->last_update_ms) *
@@ -140,6 +174,92 @@ static void dji_m3508_rx_cb(const struct device *dev, struct can_frame *frame,
 
 	*motor = next;
 	k_spin_unlock(&bus->lock, key);
+}
+
+static void parse_status_4(dji_m3508_bus_t *bus, uint8_t id,
+			   const struct can_frame *frame)
+{
+	const int16_t fet_temperature_cdeg = be_i16(&frame->data[0]);
+	const int16_t motor_temperature_cdeg = be_i16(&frame->data[2]);
+	const int16_t input_current_deciamp = be_i16(&frame->data[4]);
+	const int64_t now_ms = k_uptime_get();
+
+	k_spinlock_key_t key = k_spin_lock(&bus->lock);
+	dji_m3508_motor_t *motor = &bus->motor[id];
+	motor->id = id;
+	motor->present = true;
+	motor->fet_temperature_cdeg = fet_temperature_cdeg;
+	motor->motor_temperature_cdeg = motor_temperature_cdeg;
+	motor->input_current_ma =
+		(int32_t)lrintf((float)input_current_deciamp * 100.0f);
+	motor->last_status4_update_ms = now_ms;
+	k_spin_unlock(&bus->lock, key);
+}
+
+static void parse_status_5(dji_m3508_bus_t *bus, uint8_t id,
+			   const struct can_frame *frame)
+{
+	const int32_t tachometer_scaled = be_i32(&frame->data[0]);
+	const int16_t input_voltage_decivolt = be_i16(&frame->data[4]);
+	const int64_t now_ms = k_uptime_get();
+
+	k_spinlock_key_t key = k_spin_lock(&bus->lock);
+	dji_m3508_motor_t *motor = &bus->motor[id];
+	motor->id = id;
+	motor->present = true;
+	motor->tachometer = tachometer_scaled / 6;
+	motor->input_voltage_mv =
+		(int32_t)input_voltage_decivolt * 100;
+	motor->last_status5_update_ms = now_ms;
+	k_spin_unlock(&bus->lock, key);
+}
+
+static void dji_m3508_rx_cb(const struct device *dev, struct can_frame *frame,
+			    void *user_data)
+{
+	ARG_UNUSED(dev);
+
+	dji_m3508_bus_t *bus = user_data;
+	if ((frame->flags & CAN_FRAME_IDE) == 0 || frame->dlc < 8) {
+		return;
+	}
+
+	const uint8_t packet_id = (uint8_t)((frame->id >> 8) & 0xffU);
+	const uint8_t id = (uint8_t)(frame->id & 0xffU);
+
+	switch (packet_id) {
+	case VESC_CAN_PACKET_STATUS:
+		parse_status_1(bus, id, frame);
+		break;
+	case VESC_CAN_PACKET_STATUS_4:
+		parse_status_4(bus, id, frame);
+		break;
+	case VESC_CAN_PACKET_STATUS_5:
+		parse_status_5(bus, id, frame);
+		break;
+	default:
+		break;
+	}
+}
+
+static int add_status_filter(const struct device *can, dji_m3508_bus_t *bus,
+			     uint32_t packet_id)
+{
+	const struct can_filter filter = {
+		.flags = CAN_FILTER_IDE,
+		.id = packet_id << 8,
+		.mask = CAN_EXT_ID_MASK & ~0xffU,
+	};
+
+	const int filter_id = can_add_rx_filter(can, dji_m3508_rx_cb, bus,
+						&filter);
+	if (filter_id < 0) {
+		LOG_ERR("failed to add VESC status %u filter: %d",
+			(unsigned int)packet_id, filter_id);
+		return filter_id;
+	}
+
+	return 0;
 }
 
 int dji_m3508_init(dji_m3508_bus_t *bus, const struct device *can,
@@ -167,20 +287,22 @@ int dji_m3508_init(dji_m3508_bus_t *bus, const struct device *can,
 		}
 	}
 
-	const struct can_filter filter = {
-		.flags = CAN_FILTER_IDE,
-		.id = VESC_CAN_PACKET_STATUS << 8,
-		.mask = CAN_EXT_ID_MASK & ~0xffU,
-	};
-
-	const int filter_id = can_add_rx_filter(can, dji_m3508_rx_cb, bus,
-						&filter);
-	if (filter_id < 0) {
-		LOG_ERR("failed to add VESC status filter: %d", filter_id);
-		return filter_id;
+	int ret = add_status_filter(can, bus, VESC_CAN_PACKET_STATUS);
+	if (ret != 0) {
+		return ret;
 	}
 
-	LOG_INF("VESC wheel status filter ready, %u motor(s)",
+	ret = add_status_filter(can, bus, VESC_CAN_PACKET_STATUS_4);
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = add_status_filter(can, bus, VESC_CAN_PACKET_STATUS_5);
+	if (ret != 0) {
+		return ret;
+	}
+
+	LOG_INF("VESC wheel status filters ready, %u motor(s)",
 		(unsigned int)bus->command_id_count);
 	return 0;
 }

@@ -29,6 +29,12 @@ docs/MOTOR_DEBUG_README_ZH.md
 docs/VESC_CODE_CHECK_AND_DEBUG_README_ZH.md
 ```
 
+VESC 电流反馈、左右轮力矩系数 `torque_k` 和 `torque_est` 入门说明见：
+
+```text
+docs/VESC_TORQUE_COEFFICIENT_BEGINNER_ZH.md
+```
+
 烧录报错、ST-LINK/OpenOCD/st-flash 排错、RST/NRST 接线说明见：
 
 ```text
@@ -45,6 +51,12 @@ docs/STLINK_4PIN_FLASH_README_ZH.md
 
 ```text
 docs/ASCENTO_BALANCE_REQUIREMENTS_ZH.md
+```
+
+已经写入模型的参数、缺失参数和逐项测量方法见：
+
+```text
+docs/ASCENTO_MODEL_PARAMETER_MEASUREMENT_GUIDE_ZH.md
 ```
 
 ## 0. 安全准备
@@ -425,8 +437,8 @@ motor wheel status all
 正常时类似：
 
 ```text
-VESC/M3508 id=101 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s current=0 mA duty=0.000
-VESC/M3508 id=100 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s current=0 mA duty=0.000
+VESC/M3508 id=101 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s cmd=0 mA motor_current=0 mA input=0 mA vin=0.00 V temp=0.0/0.0C tach=0 torque_k=0.003457 torque_est=0.000 Nm duty=0.000 s4_age=-1ms s5_age=-1ms
+VESC/M3508 id=100 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s cmd=0 mA motor_current=0 mA input=0 mA vin=0.00 V temp=0.0/0.0C tach=0 torque_k=0.003457 torque_est=0.000 Nm duty=0.000 s4_age=-1ms s5_age=-1ms
 ```
 
 如果 `no feedback`：
@@ -443,7 +455,7 @@ VESC/M3508 id=100 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s c
 输入：
 
 ```text
-motor wheel current left 300 500
+motor wheel current left 100 3000
 ```
 
 含义：
@@ -451,16 +463,16 @@ motor wheel current left 300 500
 | 参数 | 意义 |
 | --- | --- |
 | `left` | 左轮 |
-| `300` | VESC 电流命令，单位 mA，较小 |
-| `500` | 持续 500 ms |
+| `100` | VESC 电流命令，单位 mA，较小 |
+| `3000` | 持续 3000 ms |
 
 通过标准：
 
 1. 左轮短暂转动。
-2. 500 ms 后自动停止。
-3. `motor wheel status left` 能看到 `erpm`、`speed`、`current` 或 `duty` 变化。
+2. 3000 ms 后自动停止。
+3. `motor wheel status left` 能看到 `erpm`、`speed`、`motor_current`、`torque_est` 或 `duty` 变化。如果 VESC Tool 开启了 Status 4/5，还能看到 `input`、`vin`、`temp` 和 `tach` 更新。
 
-如果转得太猛，把 `300` 改成 `100`。如果不转，可以试 `500`，但不要长时间输出。
+如果 `100 mA` 不动，可以试 `300 mA / 500 ms`，但不要长时间输出。
 
 停止轮子：
 
@@ -473,7 +485,7 @@ motor wheel stop
 输入：
 
 ```text
-motor wheel current right 300 500
+motor wheel current right 100 3000
 motor wheel status right
 motor wheel stop
 ```
@@ -485,14 +497,14 @@ motor wheel stop
 输入：
 
 ```text
-motor wheel pair 300 300 500
+motor wheel pair 100 100 3000
 motor wheel stop
 ```
 
 然后反向测试：
 
 ```text
-motor wheel pair -300 -300 500
+motor wheel pair -100 -100 3000
 motor wheel stop
 ```
 
@@ -500,10 +512,10 @@ motor wheel stop
 
 | 命令 | 左轮方向 | 右轮方向 |
 | --- | --- | --- |
-| `300 300` | 自己填 | 自己填 |
-| `-300 -300` | 自己填 | 自己填 |
+| `100 100` | 已测：正转 | 已测：反转 |
+| `-100 -100` | 自己填 | 自己填 |
 
-如果某个轮方向和整机前进方向相反，后面要在控制输出符号或电机安装方向上修正。
+当前代码已记录：左轮正电流为前进方向，右轮正电流为后退方向；控制器输出时会自动给右轮取反，调试命令仍保持 VESC 原始方向。
 
 ## 9. 判断“电机能不能用”
 
@@ -651,11 +663,11 @@ M3508：
 
 ```text
 motor wheel status all
-motor wheel current left 300 500
-motor wheel current right 300 500
+motor wheel current left 100 3000
+motor wheel current right 100 3000
 motor wheel rpm left 500 300
 motor wheel rpm right 500 300
-motor wheel pair 300 300 500
+motor wheel pair 100 100 3000
 motor wheel stop
 ```
 

@@ -21,11 +21,23 @@ typedef struct {
 	int32_t round_count;
 	int32_t speed_rpm;
 	int32_t erpm;
+	int32_t command_current_ma;
+	int32_t motor_current_ma;
+	int32_t input_current_ma;
+	int32_t input_voltage_mv;
+	int32_t tachometer;
+	int16_t fet_temperature_cdeg;
+	int16_t motor_temperature_cdeg;
 	int32_t current_ma;
 	uint8_t temperature_c;
+	int64_t last_command_ms;
 	int64_t last_update_ms;
+	int64_t last_status4_update_ms;
+	int64_t last_status5_update_ms;
 	float angle_rad;
 	float speed_rad_s;
+	float current_ma_to_wheel_torque_nm;
+	float estimated_wheel_torque_nm;
 	float duty;
 } dji_m3508_motor_t;
 

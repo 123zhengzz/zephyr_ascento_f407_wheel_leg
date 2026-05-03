@@ -50,6 +50,12 @@ static int clamp_height(int height)
 	return height;
 }
 
+static float wheel_forward_sign(bool left_wheel)
+{
+	return left_wheel ? (float)APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN :
+			    (float)APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN;
+}
+
 void control_init(void)
 {
 	memset(&ctx, 0, sizeof(ctx));
@@ -233,15 +239,19 @@ void control_step(const bmi088_sample_t *imu, const dji_m3508_motor_t *left,
 	}
 
 	const float left_wheel_angle =
-		left->angle_rad / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(true) * left->angle_rad /
+		APP_M3508_REDUCTION_RATIO;
 	const float right_wheel_angle =
-		right->angle_rad / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(false) * right->angle_rad /
+		APP_M3508_REDUCTION_RATIO;
 	const float left_wheel_speed =
-		left->speed_rad_s / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(true) * left->speed_rad_s /
+		APP_M3508_REDUCTION_RATIO;
 	const float right_wheel_speed =
-		right->speed_rad_s / APP_M3508_REDUCTION_RATIO;
-	const float distance = -0.5f * (left_wheel_angle + right_wheel_angle);
-	const float speed = -0.5f * (left_wheel_speed + right_wheel_speed);
+		wheel_forward_sign(false) * right->speed_rad_s /
+		APP_M3508_REDUCTION_RATIO;
+	const float distance = 0.5f * (left_wheel_angle + right_wheel_angle);
+	const float speed = 0.5f * (left_wheel_speed + right_wheel_speed);
 
 	if (!ctx.distance_zero_valid) {
 		ctx.distance_zero_rad = distance;

@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DISABLED: st-flash USB 批量传输超时，normal/hotplug/under-reset 全部失败。
+# 请使用 ./scripts/flash.sh 或 ./scripts/openocd_mass_erase_flash.sh
+echo "stlink_flash.sh has been disabled (USB timeout). Use ./scripts/flash.sh instead." >&2
+exit 1
+
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

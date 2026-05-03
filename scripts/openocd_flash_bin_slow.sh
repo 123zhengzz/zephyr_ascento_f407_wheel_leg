@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DISABLED: 脚本参数数组拼接有 bug，且 50kHz 写入太慢被 SIGKILL。
+# 请使用 ./scripts/flash.sh 或 ./scripts/openocd_mass_erase_flash.sh
+echo "openocd_flash_bin_slow.sh has been disabled (script bug + too slow). Use ./scripts/flash.sh instead." >&2
+exit 1
+
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

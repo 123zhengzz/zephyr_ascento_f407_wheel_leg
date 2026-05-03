@@ -12,9 +12,12 @@ typedef struct {
 	float wheel_base_m;
 	float total_mass_kg;
 	float body_com_height_m;
+	float body_com_forward_offset_m;
 	float body_pitch_inertia_kg_m2;
 	float wheel_inertia_kg_m2;
 	float current_ma_to_wheel_torque_nm;
+	float left_current_ma_to_wheel_torque_nm;
+	float right_current_ma_to_wheel_torque_nm;
 	float leg_length_min_m;
 	float leg_length_max_m;
 	float leg_length_default_m;

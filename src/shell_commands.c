@@ -14,6 +14,7 @@
 #include "app_config.h"
 #include "control.h"
 #include "motor_debug.h"
+#include "pid.h"
 
 #define SHELL_WHEEL_CAN_NODE DT_ALIAS(can_wheel)
 #define SHELL_JOINT_CAN_NODE DT_ALIAS(can_joint)
@@ -151,6 +152,78 @@ static void enter_motor_debug_mode(void)
 {
 	control_set_enable(false);
 	control_stop_motion();
+}
+
+static const char *dm_reg_name(uint8_t rid)
+{
+	switch (rid) {
+	case 0x01:
+		return "KT_Value";
+	case 0x02:
+		return "OT_Value";
+	case 0x03:
+		return "OC_Value";
+	case 0x04:
+		return "ACC";
+	case 0x05:
+		return "DEC";
+	case 0x06:
+		return "MAX_SPD";
+	case 0x07:
+		return "MST_ID";
+	case 0x08:
+		return "ESC_ID";
+	case 0x09:
+		return "TIMEOUT";
+	case 0x0a:
+		return "CTRL_MODE";
+	case 0x15:
+		return "PMAX";
+	case 0x16:
+		return "VMAX";
+	case 0x17:
+		return "TMAX";
+	case 0x23:
+		return "can_br";
+	case 0x3b:
+		return "Imax";
+	case 0x3c:
+		return "VBus";
+	default:
+		return "reg";
+	}
+}
+
+static bool dm_reg_is_u32(uint8_t rid)
+{
+	switch (rid) {
+	case 0x07:
+	case 0x08:
+	case 0x09:
+	case 0x0a:
+	case 0x23:
+	case 0x24:
+	case 0x25:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static const char *dm_ctrl_mode_name(uint32_t mode)
+{
+	switch (mode) {
+	case 1:
+		return "MIT";
+	case 2:
+		return "pos_vel";
+	case 3:
+		return "velocity";
+	case 4:
+		return "pvt";
+	default:
+		return "unknown";
+	}
 }
 
 static int cmd_robot_enable(const struct shell *sh, size_t argc, char **argv)
@@ -362,6 +435,31 @@ static int cmd_motor_can_rawx(const struct shell *sh, size_t argc, char **argv)
 	return cmd_motor_can_raw_common(sh, argc, argv, true);
 }
 
+static int cmd_motor_can_recover(const struct shell *sh, size_t argc, char **argv)
+{
+	if (argc == 1 || strcmp(argv[1], "all") == 0) {
+		can_stop(shell_joint_can);
+		can_start(shell_joint_can);
+		can_stop(shell_wheel_can);
+		can_start(shell_wheel_can);
+		(void)print_can_status(sh, "joint/CAN1", shell_joint_can);
+		(void)print_can_status(sh, "wheel/CAN2", shell_wheel_can);
+		return 0;
+	}
+
+	const struct device *dev;
+	const char *name;
+	if (!parse_can_bus(argv[1], &dev, &name)) {
+		shell_error(sh, "bus must be joint|dm|can1|wheel|m3508|can2|all");
+		return -EINVAL;
+	}
+
+	enter_motor_debug_mode();
+	can_stop(dev);
+	can_start(dev);
+	return print_can_status(sh, name, dev);
+}
+
 static int print_wheel_status(const struct shell *sh, uint8_t id)
 {
 	dji_m3508_motor_t motor;
@@ -372,13 +470,33 @@ static int print_wheel_status(const struct shell *sh, uint8_t id)
 	}
 
 	const int64_t age_ms = k_uptime_get() - motor.last_update_ms;
+	const int64_t s4_age_ms = motor.last_status4_update_ms > 0 ?
+				  k_uptime_get() -
+					  motor.last_status4_update_ms :
+				  -1;
+	const int64_t s5_age_ms = motor.last_status5_update_ms > 0 ?
+				  k_uptime_get() -
+					  motor.last_status5_update_ms :
+				  -1;
 	shell_print(sh,
 		    "VESC/M3508 id=%u age=%lldms erpm=%d motor_rpm=%d "
-		    "angle=%.3f rad speed=%.3f rad/s current=%d mA "
-		    "duty=%.3f",
+		    "angle=%.3f rad speed=%.3f rad/s cmd=%d mA "
+		    "motor_current=%d mA input=%d mA vin=%.2f V "
+		    "temp=%.1f/%.1fC tach=%d torque_k=%.6f "
+		    "torque_est=%.3f Nm duty=%.3f s4_age=%lldms "
+		    "s5_age=%lldms",
 		    id, (long long)age_ms, motor.erpm, motor.speed_rpm,
 		    (double)motor.angle_rad, (double)motor.speed_rad_s,
-		    motor.current_ma, (double)motor.duty);
+		    motor.command_current_ma, motor.motor_current_ma,
+		    motor.input_current_ma,
+		    (double)motor.input_voltage_mv * 0.001,
+		    (double)motor.fet_temperature_cdeg * 0.1,
+		    (double)motor.motor_temperature_cdeg * 0.1,
+		    motor.tachometer,
+		    (double)motor.current_ma_to_wheel_torque_nm,
+		    (double)motor.estimated_wheel_torque_nm,
+		    (double)motor.duty, (long long)s4_age_ms,
+		    (long long)s5_age_ms);
 	return 0;
 }
 
@@ -588,6 +706,140 @@ static int cmd_motor_dm_zero(const struct shell *sh, size_t argc, char **argv)
 	return ret;
 }
 
+static int cmd_motor_dm_reg(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+
+	uint8_t id;
+	int32_t rid_value;
+	if (!parse_dm_id(argv[1], &id) || !parse_i32(argv[2], &rid_value) ||
+	    rid_value < 0 || rid_value > 0xff) {
+		shell_error(sh, "usage: motor dm reg <left|right|id> <rid>");
+		return -EINVAL;
+	}
+
+	enter_motor_debug_mode();
+	dm4340_param_response_t response;
+	const int ret = motor_debug_dm_read_reg(id, (uint8_t)rid_value,
+						&response);
+	if (ret != 0) {
+		shell_error(sh, "DM4340 id=%u reg 0x%02x read failed: %d",
+			    id, (unsigned int)rid_value, ret);
+		return ret;
+	}
+
+	const int64_t age_ms = k_uptime_get() - response.last_update_ms;
+	const uint32_t u32 = response.raw_u32;
+	const char *name = dm_reg_name((uint8_t)rid_value);
+
+	if (dm_reg_is_u32((uint8_t)rid_value)) {
+		if ((uint8_t)rid_value == 0x0a) {
+			shell_print(sh,
+				    "DM4340 id=%u %s(0x%02x) u32=%u mode=%s raw=0x%08x age=%lldms",
+				    id, name, (unsigned int)rid_value, u32,
+				    dm_ctrl_mode_name(u32), u32,
+				    (long long)age_ms);
+		} else {
+			shell_print(sh,
+				    "DM4340 id=%u %s(0x%02x) u32=%u raw=0x%08x age=%lldms",
+				    id, name, (unsigned int)rid_value, u32,
+				    u32, (long long)age_ms);
+		}
+	} else {
+		shell_print(sh,
+			    "DM4340 id=%u %s(0x%02x) f=%.6f raw=0x%08x u32=%u age=%lldms",
+			    id, name, (unsigned int)rid_value,
+			    (double)response.value_float, u32, u32,
+			    (long long)age_ms);
+	}
+
+	return 0;
+}
+
+static int cmd_motor_dm_diag(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+
+	uint8_t id;
+	if (!parse_dm_id(argv[1], &id)) {
+		shell_error(sh, "DM id must be left/right/1..15");
+		return -EINVAL;
+	}
+
+	enter_motor_debug_mode();
+
+	/* Read all critical diagnostic registers */
+	static const uint8_t diag_rids[] = {
+		0x01, /* FAULT */
+		0x02, /* WARNING */
+		0x04, /* STATUS */
+		0x05, /* CAN_ERR */
+		0x06, /* MOTOR_ERR */
+		0x09, /* TIMEOUT */
+		0x0a, /* CTRL_MODE */
+		0x15, /* PMAX */
+		0x16, /* VMAX */
+		0x17, /* TMAX */
+		0x3b, /* Imax */
+		0x3c, /* VBus */
+	};
+
+	dm4340_feedback_t fb;
+	if (!motor_debug_get_dm4340(id, &fb)) {
+		shell_print(sh, "DM4340 id=%u no feedback", id);
+	} else {
+		const int64_t age_ms = k_uptime_get() - fb.last_update_ms;
+		shell_print(sh,
+			    "DM4340 id=%u err=0x%x age=%lldms pos=%.4f "
+			    "vel=%.4f torque=%.4f temp=%u/%uC",
+			    id, fb.error, (long long)age_ms,
+			    (double)fb.position_rad, (double)fb.velocity_rad_s,
+			    (double)fb.torque_nm, fb.mos_temperature_c,
+			    fb.rotor_temperature_c);
+	}
+
+	shell_print(sh, "--- DM4340 id=%u diagnostic registers ---", id);
+
+	for (size_t i = 0; i < ARRAY_SIZE(diag_rids); i++) {
+		const uint8_t rid = diag_rids[i];
+		dm4340_param_response_t response;
+		const int ret = motor_debug_dm_read_reg(id, rid, &response);
+		if (ret != 0) {
+			shell_print(sh, "  %s(0x%02x) read failed: %d",
+				    dm_reg_name(rid), (unsigned int)rid, ret);
+			continue;
+		}
+
+		const char *name = dm_reg_name(rid);
+		const uint32_t u32 = response.raw_u32;
+		const int64_t age_ms = k_uptime_get() - response.last_update_ms;
+
+		if (dm_reg_is_u32(rid)) {
+			if (rid == 0x0a) {
+				shell_print(sh,
+					    "  %s(0x%02x) u32=%u mode=%s age=%lldms",
+					    name, (unsigned int)rid, u32,
+					    dm_ctrl_mode_name(u32),
+					    (long long)age_ms);
+			} else {
+				shell_print(sh,
+					    "  %s(0x%02x) u32=%u raw=0x%08x age=%lldms",
+					    name, (unsigned int)rid, u32, u32,
+					    (long long)age_ms);
+			}
+		} else {
+			shell_print(sh,
+				    "  %s(0x%02x) f=%.6f raw=0x%08x age=%lldms",
+				    name, (unsigned int)rid,
+				    (double)response.value_float, u32,
+				    (long long)age_ms);
+		}
+	}
+
+	shell_print(sh, "--- end diag ---");
+	return 0;
+}
+
 static int cmd_motor_dm_pos(const struct shell *sh, size_t argc, char **argv)
 {
 	uint8_t id;
@@ -693,6 +945,118 @@ static int cmd_motor_dm_mit(const struct shell *sh, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_motor_dm_nudge(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t id;
+	float delta_rad;
+	float kp = 3.0f;
+	float kd = 0.20f;
+	int32_t duration_ms = 800;
+
+	if (!parse_dm_id(argv[1], &id) ||
+	    !parse_float_arg(argv[2], &delta_rad)) {
+		shell_error(sh,
+			    "usage: motor dm nudge <left|right|id> <delta_rad> [kp] [kd] [ms]");
+		return -EINVAL;
+	}
+	if (argc > 3 && !parse_float_arg(argv[3], &kp)) {
+		shell_error(sh, "invalid kp");
+		return -EINVAL;
+	}
+	if (argc > 4 && !parse_float_arg(argv[4], &kd)) {
+		shell_error(sh, "invalid kd");
+		return -EINVAL;
+	}
+	if (argc > 5 && !parse_i32(argv[5], &duration_ms)) {
+		shell_error(sh, "invalid duration");
+		return -EINVAL;
+	}
+
+	dm4340_feedback_t fb;
+	if (!motor_debug_get_dm4340(id, &fb)) {
+		shell_error(sh, "DM4340 id=%u has no feedback", id);
+		return -ENODATA;
+	}
+
+	delta_rad = CLAMP(delta_rad, -0.10f, 0.10f);
+	enter_motor_debug_mode();
+	const float target_rad = fb.position_rad + delta_rad;
+	const int ret = motor_debug_set_dm_mit_raw(id, target_rad, 0.0f,
+						   kp, kd, 0.0f,
+						   duration_ms);
+	if (ret != 0) {
+		shell_error(sh, "set DM nudge failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(sh,
+		    "DM4340 id=%u nudge from %.4f to %.4f rad delta=%.4f kp=%.2f kd=%.2f for %d ms",
+		    id, (double)fb.position_rad, (double)target_rad,
+		    (double)delta_rad, (double)kp, (double)kd, duration_ms);
+	return 0;
+}
+
+static int cmd_motor_dm_wiggle(const struct shell *sh, size_t argc, char **argv)
+{
+	uint8_t id;
+	float amplitude_rad;
+	int32_t period_ms = 2000;
+	float kp = 12.0f;
+	float kd = 0.50f;
+	int32_t duration_ms = APP_MOTOR_DEBUG_MAX_TIMEOUT_MS;
+
+	if (!parse_dm_id(argv[1], &id) ||
+	    !parse_float_arg(argv[2], &amplitude_rad)) {
+		shell_error(sh,
+			    "usage: motor dm wiggle <left|right|id> <amp_rad> [period_ms] [kp] [kd] [ms]");
+		return -EINVAL;
+	}
+	if (argc > 3 && !parse_i32(argv[3], &period_ms)) {
+		shell_error(sh, "invalid period");
+		return -EINVAL;
+	}
+	if (argc > 4 && !parse_float_arg(argv[4], &kp)) {
+		shell_error(sh, "invalid kp");
+		return -EINVAL;
+	}
+	if (argc > 5 && !parse_float_arg(argv[5], &kd)) {
+		shell_error(sh, "invalid kd");
+		return -EINVAL;
+	}
+	if (argc > 6 && !parse_i32(argv[6], &duration_ms)) {
+		shell_error(sh, "invalid duration");
+		return -EINVAL;
+	}
+
+	dm4340_feedback_t fb;
+	if (!motor_debug_get_dm4340(id, &fb)) {
+		shell_error(sh, "DM4340 id=%u has no feedback", id);
+		return -ENODATA;
+	}
+
+	amplitude_rad = app_clampf(amplitude_rad, 0.001f, 0.08f);
+	period_ms = CLAMP(period_ms, 500, 5000);
+	if (duration_ms <= 0) {
+		duration_ms = APP_MOTOR_DEBUG_DEFAULT_TIMEOUT_MS;
+	}
+	duration_ms = MIN(duration_ms, APP_MOTOR_DEBUG_MAX_TIMEOUT_MS);
+
+	enter_motor_debug_mode();
+	const int ret = motor_debug_set_dm_wiggle(id, fb.position_rad,
+						 amplitude_rad, period_ms, kp,
+						 kd, duration_ms);
+	if (ret != 0) {
+		shell_error(sh, "set DM wiggle failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(sh,
+		    "DM4340 id=%u wiggle center=%.4f amp=%.4f period=%dms kp=%.2f kd=%.2f for %d ms",
+		    id, (double)fb.position_rad, (double)amplitude_rad,
+		    period_ms, (double)kp, (double)kd, duration_ms);
+	return 0;
+}
+
 static int cmd_motor_dm_stop(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -707,6 +1071,16 @@ static int cmd_motor_dm_stop(const struct shell *sh, size_t argc, char **argv)
 	const int ret = motor_debug_stop_dm(id);
 	shell_print(sh, "DM4340 id=%u debug stopped", id);
 	return ret;
+}
+
+static int cmd_motor_dm_rxlog(const struct shell *sh, size_t argc, char **argv)
+{
+	ARG_UNUSED(sh);
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	motor_debug_dump_dm4340_rx_log();
+	return 0;
 }
 
 static int cmd_motor_debug_status(const struct shell *sh, size_t argc,
@@ -802,6 +1176,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_motor_dm_disable, 2, 0),
 	SHELL_CMD_ARG(zero, NULL, "motor dm zero <left|right|id>",
 		      cmd_motor_dm_zero, 2, 0),
+	SHELL_CMD_ARG(reg, NULL, "motor dm reg <left|right|id> <rid>",
+		      cmd_motor_dm_reg, 3, 0),
+		SHELL_CMD_ARG(diag, NULL, "motor dm diag <left|right|id>", cmd_motor_dm_diag, 2, 0),
 	SHELL_CMD_ARG(pos, NULL,
 		      "motor dm pos <left|right|id> <rad> [vel_rad_s] [ms]",
 		      cmd_motor_dm_pos, 3, 2),
@@ -810,8 +1187,15 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(mit, NULL,
 		      "motor dm mit <left|right|id> <pos_rad> <vel_rad_s> <kp> <kd> <torque_nm> [ms]",
 		      cmd_motor_dm_mit, 7, 1),
+	SHELL_CMD_ARG(nudge, NULL,
+		      "motor dm nudge <left|right|id> <delta_rad> [kp] [kd] [ms]",
+		      cmd_motor_dm_nudge, 3, 3),
+	SHELL_CMD_ARG(wiggle, NULL,
+		      "motor dm wiggle <left|right|id> <amp_rad> [period_ms] [kp] [kd] [ms]",
+		      cmd_motor_dm_wiggle, 3, 4),
 	SHELL_CMD_ARG(stop, NULL, "motor dm stop <left|right|id>",
 		      cmd_motor_dm_stop, 2, 0),
+	SHELL_CMD(rxlog, NULL, "motor dm rxlog", cmd_motor_dm_rxlog),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
@@ -833,6 +1217,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(rawx, NULL,
 		      "motor can rawx <joint|wheel|can1|can2> <ext_id> [byte0..byte7]",
 		      cmd_motor_can_rawx, 3, 8),
+	SHELL_CMD_ARG(recover, NULL,
+		      "motor can recover [joint|dm|can1|wheel|m3508|can2|all]",
+		      cmd_motor_can_recover, 1, 1),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(

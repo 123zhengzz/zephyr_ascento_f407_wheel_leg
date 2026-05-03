@@ -20,22 +20,53 @@
 #define APP_WHEEL_RIGHT_ID 100
 
 /*
- * DM motors are on a separate bus from the M3508 wheels, so IDs may also be
- * 1/2. Change APP_DM_MASTER_ID if the Damiao upper computer uses another
- * feedback/master ID.
+ * Wheel direction calibration from the VESC current test.
+ *
+ * Semantics:
+ * - Controller/model wheel current is robot-forward positive.
+ * - Raw VESC debug current is left untouched.
+ * - raw_vesc_current = logical_forward_current * APP_WHEEL_*_FORWARD_CURRENT_SIGN
+ * - logical_forward_speed = raw_vesc_speed * APP_WHEEL_*_FORWARD_CURRENT_SIGN
+ *
+ * Measured result: +VESC current makes the left wheel rotate forward, while
+ * +VESC current makes the right wheel rotate backward.
+ */
+#define APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN 1
+#define APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN -1
+#define APP_M3508_DIRECTION_TEST_CURRENT_MA 100
+#define APP_M3508_DIRECTION_TEST_DURATION_MS 3000
+
+/*
+ * DM motors are on CAN1. Command IDs are the motor IDs; feedback IDs are the
+ * Master IDs configured in the Damiao tool.
  */
 #define APP_DM_LEFT_ID 1
 #define APP_DM_RIGHT_ID 2
-#define APP_DM_MASTER_ID 0x00
+#define APP_DM_LEFT_FEEDBACK_ID 0x11
+#define APP_DM_RIGHT_FEEDBACK_ID 0x12
+#define APP_DM_MASTER_ID APP_DM_LEFT_FEEDBACK_ID
 
 #define APP_WHEEL_CURRENT_LIMIT 6500
 #define APP_WHEEL_CURRENT_SAFE 2500
 #define APP_M3508_REDUCTION_RATIO 19.203208f
+#define APP_M3508_MOTOR_KT_NM_PER_A 0.180f
+#define APP_M3508_GEARBOX_EFFICIENCY 1.000f
 #define APP_VESC_CURRENT_CMD_TO_AMP 0.001f
 #define APP_VESC_MOTOR_POLE_PAIRS 7.0f
 #define APP_VESC_STATUS_RATE_HZ 200
 #define APP_VESC_FEEDBACK_TIMEOUT_MS 50
 #define APP_VESC_DEBUG_ERPM_LIMIT 8000
+
+#define APP_M3508_CALC_CURRENT_MA_TO_WHEEL_TORQUE_NM \
+	(APP_M3508_MOTOR_KT_NM_PER_A * APP_M3508_REDUCTION_RATIO * \
+	 APP_M3508_GEARBOX_EFFICIENCY * APP_VESC_CURRENT_CMD_TO_AMP)
+#define APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM \
+	APP_M3508_CALC_CURRENT_MA_TO_WHEEL_TORQUE_NM
+#define APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM \
+	APP_M3508_CALC_CURRENT_MA_TO_WHEEL_TORQUE_NM
+#define APP_ASCENTO_CURRENT_MA_TO_WHEEL_TORQUE_NM \
+	((APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM + \
+	  APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM) * 0.5f)
 
 #define APP_MOTOR_DEBUG_DEFAULT_TIMEOUT_MS 1000
 #define APP_MOTOR_DEBUG_MAX_TIMEOUT_MS 5000
@@ -82,7 +113,7 @@
 #define APP_PID_YAW_ANGLE_P 80.0f
 #define APP_PID_YAW_GYRO_P 5.0f
 
-#define APP_ANGLE_ZERO_DEG -2.25f
+#define APP_ANGLE_ZERO_DEG -1.225f
 #define APP_YAW_ZERO_DEG 0.0f
 
 #define APP_BATTERY_ADC_CHANNEL 8
@@ -90,17 +121,17 @@
 #define APP_BATTERY_DIVIDER_RATIO ((200.0f + 22.0f) / 22.0f)
 #define APP_BATTERY_LED_THRESHOLD_V 20.5f
 
-/* Placeholder physical data for the dormant Ascento controller. */
-#define APP_ASCENTO_WHEEL_RADIUS_M 0.060f
-#define APP_ASCENTO_WHEEL_BASE_M 0.250f
-#define APP_ASCENTO_TOTAL_MASS_KG 8.000f
-#define APP_ASCENTO_BODY_COM_HEIGHT_M 0.180f
+/* Measured physical data for the dormant Ascento controller. */
+#define APP_ASCENTO_WHEEL_RADIUS_M 0.030f
+#define APP_ASCENTO_WHEEL_BASE_M 0.201f
+#define APP_ASCENTO_TOTAL_MASS_KG 2.315f
+#define APP_ASCENTO_BODY_COM_HEIGHT_M 0.098f
+#define APP_ASCENTO_BODY_COM_FORWARD_OFFSET_M (-0.040f)
 #define APP_ASCENTO_BODY_PITCH_INERTIA_KG_M2 0.060f
 #define APP_ASCENTO_WHEEL_INERTIA_KG_M2 0.00035f
-#define APP_ASCENTO_CURRENT_MA_TO_WHEEL_TORQUE_NM 0.00045f
-#define APP_ASCENTO_LEG_LENGTH_MIN_M 0.120f
-#define APP_ASCENTO_LEG_LENGTH_MAX_M 0.360f
-#define APP_ASCENTO_LEG_LENGTH_DEFAULT_M 0.220f
+#define APP_ASCENTO_LEG_LENGTH_MIN_M 0.06049f
+#define APP_ASCENTO_LEG_LENGTH_MAX_M 0.17681f
+#define APP_ASCENTO_LEG_LENGTH_DEFAULT_M 0.11865f
 
 /* Linear joint-to-leg-length map until the real four-bar curve is measured. */
 #define APP_ASCENTO_LEFT_JOINT_AT_MIN_LEG_RAD APP_LEFT_LEG_MIN_RAD

@@ -205,6 +205,36 @@ int motor_debug_dm_save_zero(uint8_t id)
 	return dm4340_save_zero(ctx.dm_bus, id);
 }
 
+int motor_debug_dm_read_reg(uint8_t id, uint8_t rid,
+			    dm4340_param_response_t *out)
+{
+	if (!valid_dm_id(id) || ctx.dm_bus == NULL || out == NULL) {
+		return -EINVAL;
+	}
+
+	const int64_t start_ms = k_uptime_get();
+	const int ret = dm4340_request_param_read(ctx.dm_bus, id, rid);
+	if (ret != 0) {
+		return ret;
+	}
+
+	while ((k_uptime_get() - start_ms) < 80) {
+		(void)dm4340_poll_rx_fifo(ctx.dm_bus);
+
+		dm4340_param_response_t response;
+		if (dm4340_get_param_response(ctx.dm_bus, id, rid,
+					      &response) &&
+		    response.last_update_ms >= start_ms) {
+			*out = response;
+			return 0;
+		}
+
+		k_sleep(K_MSEC(2));
+	}
+
+	return -ETIMEDOUT;
+}
+
 int motor_debug_set_dm_pos_vel(uint8_t id, float position_rad,
 			       float velocity_rad_s, int32_t duration_ms)
 {
@@ -286,6 +316,72 @@ int motor_debug_set_dm_mit(uint8_t id, float position_rad,
 	return 0;
 }
 
+int motor_debug_set_dm_mit_raw(uint8_t id, float position_rad,
+				       float velocity_rad_s, float kp, float kd,
+				       float torque_nm, int32_t duration_ms)
+{
+	if (!valid_dm_id(id)) {
+		return -EINVAL;
+	}
+
+	position_rad = app_clampf(position_rad, -12.5f, 12.5f);
+	velocity_rad_s = app_clampf(velocity_rad_s,
+				    -APP_DM_DEBUG_VEL_LIMIT_RAD_S,
+				    APP_DM_DEBUG_VEL_LIMIT_RAD_S);
+	kp = app_clampf(kp, 0.0f, APP_DM_DEBUG_KP_LIMIT);
+	kd = app_clampf(kd, 0.0f, APP_DM_DEBUG_KD_LIMIT);
+	torque_nm = app_clampf(torque_nm, -APP_DM_DEBUG_TORQUE_LIMIT_NM,
+			       APP_DM_DEBUG_TORQUE_LIMIT_NM);
+
+	k_spinlock_key_t key = k_spin_lock(&ctx.lock);
+	ctx.state.dm[id] = (motor_debug_dm_command_t) {
+		.mode = MOTOR_DEBUG_DM_MIT,
+		.id = id,
+		.position_rad = position_rad,
+		.velocity_rad_s = velocity_rad_s,
+		.kp = kp,
+		.kd = kd,
+		.torque_nm = torque_nm,
+	};
+	ctx.state.dm_deadline_ms[id] = deadline_from_duration(duration_ms);
+	k_spin_unlock(&ctx.lock, key);
+
+	return 0;
+}
+
+int motor_debug_set_dm_wiggle(uint8_t id, float center_rad,
+			      float amplitude_rad, int32_t period_ms, float kp,
+			      float kd, int32_t duration_ms)
+{
+	if (!valid_dm_id(id)) {
+		return -EINVAL;
+	}
+
+	center_rad = app_clampf(center_rad, -12.5f, 12.5f);
+	amplitude_rad = app_clampf(amplitude_rad, 0.001f, 0.08f);
+	period_ms = CLAMP(period_ms, 500, 5000);
+	kp = app_clampf(kp, 0.0f, APP_DM_DEBUG_KP_LIMIT);
+	kd = app_clampf(kd, 0.0f, APP_DM_DEBUG_KD_LIMIT);
+
+	k_spinlock_key_t key = k_spin_lock(&ctx.lock);
+	ctx.state.dm[id] = (motor_debug_dm_command_t) {
+		.mode = MOTOR_DEBUG_DM_WIGGLE,
+		.id = id,
+		.position_rad = center_rad,
+		.velocity_rad_s = 0.0f,
+		.kp = kp,
+		.kd = kd,
+		.torque_nm = 0.0f,
+		.amplitude_rad = amplitude_rad,
+		.period_ms = period_ms,
+		.start_ms = k_uptime_get(),
+	};
+	ctx.state.dm_deadline_ms[id] = deadline_from_duration(duration_ms);
+	k_spin_unlock(&ctx.lock, key);
+
+	return 0;
+}
+
 int motor_debug_stop_dm(uint8_t id)
 {
 	if (!valid_dm_id(id)) {
@@ -298,7 +394,13 @@ int motor_debug_stop_dm(uint8_t id)
 	k_spin_unlock(&ctx.lock, key);
 
 	if (ctx.dm_bus != NULL) {
-		return dm4340_send_velocity(ctx.dm_bus, id, 0.0f);
+		int first_error = dm4340_send_mit(ctx.dm_bus, id, 0.0f, 0.0f,
+						  0.0f, 0.0f, 0.0f);
+		const int ret = dm4340_send_velocity(ctx.dm_bus, id, 0.0f);
+		if (first_error == 0) {
+			first_error = ret;
+		}
+		return first_error;
 	}
 
 	return 0;
@@ -315,6 +417,10 @@ int motor_debug_stop_all(void)
 	}
 
 	if (ctx.dm_bus != NULL) {
+		(void)dm4340_send_mit(ctx.dm_bus, APP_DM_LEFT_ID, 0.0f, 0.0f,
+				      0.0f, 0.0f, 0.0f);
+		(void)dm4340_send_mit(ctx.dm_bus, APP_DM_RIGHT_ID, 0.0f, 0.0f,
+				      0.0f, 0.0f, 0.0f);
 		(void)dm4340_send_velocity(ctx.dm_bus, APP_DM_LEFT_ID, 0.0f);
 		(void)dm4340_send_velocity(ctx.dm_bus, APP_DM_RIGHT_ID, 0.0f);
 	}
@@ -372,6 +478,13 @@ bool motor_debug_get_dm4340(uint8_t id, dm4340_feedback_t *out)
 	return dm4340_get(ctx.dm_bus, id, out);
 }
 
+void motor_debug_dump_dm4340_rx_log(void)
+{
+	if (ctx.dm_bus != NULL) {
+		dm4340_dump_rx_log(ctx.dm_bus);
+	}
+}
+
 const char *motor_debug_dm_mode_name(motor_debug_dm_mode_t mode)
 {
 	switch (mode) {
@@ -381,6 +494,8 @@ const char *motor_debug_dm_mode_name(motor_debug_dm_mode_t mode)
 		return "vel";
 	case MOTOR_DEBUG_DM_MIT:
 		return "mit";
+	case MOTOR_DEBUG_DM_WIGGLE:
+		return "wiggle";
 	case MOTOR_DEBUG_DM_NONE:
 	default:
 		return "none";

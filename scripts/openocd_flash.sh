@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# DISABLED: openocd.cfg 无 workarea 配置导致 flash write 算法超时。
+# 请使用 ./scripts/flash.sh 或 ./scripts/openocd_mass_erase_flash.sh
+echo "openocd_flash.sh has been disabled (flash write timeout). Use ./scripts/flash.sh instead." >&2
+exit 1
+
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

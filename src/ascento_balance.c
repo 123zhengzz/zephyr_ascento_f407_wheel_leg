@@ -14,10 +14,15 @@ const ascento_balance_params_t ascento_balance_default_params = {
 	.wheel_base_m = APP_ASCENTO_WHEEL_BASE_M,
 	.total_mass_kg = APP_ASCENTO_TOTAL_MASS_KG,
 	.body_com_height_m = APP_ASCENTO_BODY_COM_HEIGHT_M,
+	.body_com_forward_offset_m = APP_ASCENTO_BODY_COM_FORWARD_OFFSET_M,
 	.body_pitch_inertia_kg_m2 = APP_ASCENTO_BODY_PITCH_INERTIA_KG_M2,
 	.wheel_inertia_kg_m2 = APP_ASCENTO_WHEEL_INERTIA_KG_M2,
 	.current_ma_to_wheel_torque_nm =
 		APP_ASCENTO_CURRENT_MA_TO_WHEEL_TORQUE_NM,
+	.left_current_ma_to_wheel_torque_nm =
+		APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM,
+	.right_current_ma_to_wheel_torque_nm =
+		APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM,
 	.leg_length_min_m = APP_ASCENTO_LEG_LENGTH_MIN_M,
 	.leg_length_max_m = APP_ASCENTO_LEG_LENGTH_MAX_M,
 	.leg_length_default_m = APP_ASCENTO_LEG_LENGTH_DEFAULT_M,
@@ -36,6 +41,12 @@ const ascento_balance_params_t ascento_balance_default_params = {
 static float lerpf(float a, float b, float t)
 {
 	return a + (b - a) * t;
+}
+
+static float wheel_forward_sign(bool left_wheel)
+{
+	return left_wheel ? (float)APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN :
+			    (float)APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN;
 }
 
 void ascento_balance_init(ascento_balance_state_t *state)
@@ -60,7 +71,8 @@ bool ascento_balance_params_ready(const ascento_balance_params_t *params)
 	       params->wheel_base_m > 0.0f &&
 	       params->total_mass_kg > 0.0f &&
 	       params->body_com_height_m > 0.0f &&
-	       params->current_ma_to_wheel_torque_nm > 0.0f &&
+	       params->left_current_ma_to_wheel_torque_nm > 0.0f &&
+	       params->right_current_ma_to_wheel_torque_nm > 0.0f &&
 	       params->leg_length_max_m > params->leg_length_min_m;
 }
 
@@ -108,10 +120,9 @@ float ascento_balance_joint_from_leg_length(const ascento_balance_params_t *para
 }
 
 static int16_t torque_to_current_ma(float torque_nm,
-				    const ascento_balance_params_t *params)
+				    float current_ma_to_wheel_torque_nm)
 {
-	const float current_ma =
-		torque_nm / params->current_ma_to_wheel_torque_nm;
+	const float current_ma = torque_nm / current_ma_to_wheel_torque_nm;
 	return app_clamp_i16((int32_t)lrintf(current_ma), -APP_WHEEL_CURRENT_LIMIT,
 			     APP_WHEEL_CURRENT_LIMIT);
 }
@@ -144,13 +155,17 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	}
 
 	const float left_wheel_angle =
-		input->left_wheel.angle_rad / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(true) * input->left_wheel.angle_rad /
+		APP_M3508_REDUCTION_RATIO;
 	const float right_wheel_angle =
-		input->right_wheel.angle_rad / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(false) * input->right_wheel.angle_rad /
+		APP_M3508_REDUCTION_RATIO;
 	const float left_wheel_speed =
-		input->left_wheel.speed_rad_s / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(true) * input->left_wheel.speed_rad_s /
+		APP_M3508_REDUCTION_RATIO;
 	const float right_wheel_speed =
-		input->right_wheel.speed_rad_s / APP_M3508_REDUCTION_RATIO;
+		wheel_forward_sign(false) * input->right_wheel.speed_rad_s /
+		APP_M3508_REDUCTION_RATIO;
 
 	const float wheel_distance_m =
 		0.5f * (left_wheel_angle + right_wheel_angle) *
@@ -189,9 +204,11 @@ void ascento_balance_update(ascento_balance_state_t *state,
 		-params->k_yaw_rate * (yaw_rate_rad_s -
 				       input->target_yaw_rate_rad_s);
 
+	const float weaker_torque_coeff =
+		fminf(params->left_current_ma_to_wheel_torque_nm,
+		      params->right_current_ma_to_wheel_torque_nm);
 	const float current_limit_torque =
-			params->current_ma_to_wheel_torque_nm *
-		(float)APP_WHEEL_CURRENT_LIMIT;
+		weaker_torque_coeff * (float)APP_WHEEL_CURRENT_LIMIT;
 	balance_torque_nm = app_clampf(balance_torque_nm,
 				       -current_limit_torque,
 				       current_limit_torque);
@@ -220,10 +237,10 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	output->active = true;
 	output->left_wheel_current =
 		torque_to_current_ma(balance_torque_nm - yaw_torque_nm,
-				     params);
+				     params->left_current_ma_to_wheel_torque_nm);
 	output->right_wheel_current =
 		torque_to_current_ma(balance_torque_nm + yaw_torque_nm,
-				     params);
+				     params->right_current_ma_to_wheel_torque_nm);
 	output->left_joint_position_rad =
 		ascento_balance_joint_from_leg_length(params, true,
 						      left_leg_length);

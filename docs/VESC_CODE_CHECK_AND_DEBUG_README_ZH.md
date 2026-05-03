@@ -183,8 +183,39 @@ motor wheel status all
 正常应类似：
 
 ```text
-VESC/M3508 id=101 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s current=0 mA duty=0.000
-VESC/M3508 id=100 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s current=0 mA duty=0.000
+VESC/M3508 id=101 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s cmd=0 mA motor_current=0 mA input=0 mA vin=0.00 V temp=0.0/0.0C tach=0 torque_k=0.003457 torque_est=0.000 Nm duty=0.000 s4_age=-1ms s5_age=-1ms
+VESC/M3508 id=100 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s cmd=0 mA motor_current=0 mA input=0 mA vin=0.00 V temp=0.0/0.0C tach=0 torque_k=0.003457 torque_est=0.000 Nm duty=0.000 s4_age=-1ms s5_age=-1ms
+```
+
+其中：
+
+| 字段 | 含义 |
+| --- | --- |
+| `cmd` | F407 最近一次通过 CAN 发给 VESC 的电流命令 |
+| `motor_current` | VESC Status 1 回传的实测电机电流 |
+| `input` | VESC Status 4 回传的输入电流，需要在 VESC Tool 开启 Status 4 |
+| `vin` | VESC Status 5 回传的输入电压，需要在 VESC Tool 开启 Status 5 |
+| `temp` | VESC Status 4 回传的 FET/电机温度 |
+| `tach` | VESC Status 5 回传的 tachometer |
+| `torque_k` | 当前固件用于该 VESC ID 的 `Nm/mA` 系数 |
+| `torque_est` | `motor_current * torque_k` 得到的轮端力矩估计 |
+| `duty` | VESC 占空比 |
+| `s4_age/s5_age` | Status 4/5 距离上次更新的时间，`-1ms` 表示还没有收到 |
+
+VESC 上位机完成 FOC 检测后，`motor_current` 才能作为可信的电流反馈。当前固件按 M3508 理论力矩常数、减速比和效率计算左右轮默认 `torque_k`。如果左右 VESC 或电机需要不同修正，改 `APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM` 和 `APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM`。
+
+默认计算公式：
+
+```text
+torque_k = Kt * reduction_ratio * gearbox_efficiency * 0.001
+```
+
+对应代码：
+
+```c
+#define APP_M3508_MOTOR_KT_NM_PER_A 0.180f
+#define APP_M3508_REDUCTION_RATIO 19.203208f
+#define APP_M3508_GEARBOX_EFFICIENCY 1.000f
 ```
 
 判断：
@@ -204,7 +235,7 @@ VESC/M3508 id=100 age=5ms erpm=0 motor_rpm=0 angle=0.000 rad speed=0.000 rad/s c
 ```text
 robot enable 0
 motor wheel stop
-motor wheel current left 100 300
+motor wheel current left 100 3000
 motor wheel status left
 motor wheel stop
 ```
@@ -214,7 +245,7 @@ motor wheel stop
 ```text
 robot enable 0
 motor wheel stop
-motor wheel current right 100 300
+motor wheel current right 100 3000
 motor wheel status right
 motor wheel stop
 ```
@@ -302,7 +333,7 @@ motor debug stop
 同向：
 
 ```text
-motor wheel pair 100 100 300
+motor wheel pair 100 100 3000
 motor wheel status all
 motor wheel stop
 ```
@@ -310,7 +341,7 @@ motor wheel stop
 反向：
 
 ```text
-motor wheel pair 100 -100 300
+motor wheel pair 100 -100 3000
 motor wheel status all
 motor wheel stop
 ```
@@ -319,9 +350,9 @@ motor wheel stop
 
 | 命令 | 左轮实际方向 | 右轮实际方向 | 是否符合机器人前进方向 |
 | --- | --- | --- | --- |
-| `motor wheel pair 100 100 300` |  |  |  |
-| `motor wheel pair -100 -100 300` |  |  |  |
-| `motor wheel pair 100 -100 300` |  |  |  |
+| `motor wheel pair 100 100 3000` | 已测：正转 | 已测：反转 | 左右相反 |
+| `motor wheel pair -100 -100 3000` |  |  |  |
+| `motor wheel pair 100 -100 3000` |  |  |  |
 
 ## 12. 每次调试结束
 

@@ -65,6 +65,17 @@ static int prepare_can(const struct device *can, const char *name)
 	return 0;
 }
 
+static bool dm_any_online(void)
+{
+	for (uint8_t i = 1; i <= DM4340_MAX_ID; i++) {
+		dm4340_feedback_t fb;
+		if (dm4340_get(&dm_bus, i, &fb)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static void leds_init(void)
 {
 	if (gpio_is_ready_dt(&red_led)) {
@@ -78,11 +89,41 @@ static void leds_init(void)
 	}
 }
 
+static volatile bool rx_led_state;
+
+void dm4340_rx_led_toggle(void)
+{
+	rx_led_state = !rx_led_state;
+	if (gpio_is_ready_dt(&green_led)) {
+		(void)gpio_pin_set_dt(&green_led, rx_led_state ? 1 : 0);
+	}
+}
+
 static void set_led(const struct gpio_dt_spec *led, bool on)
 {
 	if (gpio_is_ready_dt(led)) {
 		(void)gpio_pin_set_dt(led, on ? 1 : 0);
 	}
+}
+
+static int16_t apply_wheel_forward_sign(int16_t current, int sign)
+{
+	if (sign < 0) {
+		return (int16_t)-current;
+	}
+
+	return current;
+}
+
+static int send_control_wheel_current(const control_output_t *out)
+{
+	return dji_m3508_send_group_current(
+		&dji_bus,
+		apply_wheel_forward_sign(out->left_wheel_current,
+					 APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN),
+		apply_wheel_forward_sign(out->right_wheel_current,
+					 APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN),
+		0, 0);
 }
 
 static void send_debug_output(const motor_debug_output_t *debug)
@@ -117,6 +158,27 @@ static void send_debug_output(const motor_debug_output_t *debug)
 					      cmd->velocity_rad_s, cmd->kp,
 					      cmd->kd, cmd->torque_nm);
 			break;
+		case MOTOR_DEBUG_DM_WIGGLE: {
+			const int32_t period_ms = MAX(cmd->period_ms, 1);
+			const int64_t elapsed_ms = k_uptime_get() - cmd->start_ms;
+			const int32_t phase_ms = (int32_t)(elapsed_ms % period_ms);
+			const float phase = (float)phase_ms / (float)period_ms;
+			float wave;
+
+			if (phase < 0.25f) {
+				wave = phase * 4.0f;
+			} else if (phase < 0.75f) {
+				wave = 2.0f - phase * 4.0f;
+			} else {
+				wave = phase * 4.0f - 4.0f;
+			}
+
+			(void)dm4340_send_mit(&dm_bus, id,
+					      cmd->position_rad +
+						      cmd->amplitude_rad * wave,
+					      0.0f, cmd->kp, cmd->kd, 0.0f);
+			break;
+		}
 		case MOTOR_DEBUG_DM_NONE:
 		default:
 			break;
@@ -135,6 +197,7 @@ static void control_thread(void *p1, void *p2, void *p3)
 	dji_m3508_motor_t right_motor = { 0 };
 	control_output_t out;
 	int64_t last_us = k_cyc_to_us_floor64(k_cycle_get_64());
+	bool debug_was_active = false;
 
 	while (true) {
 		const int64_t now_us = k_cyc_to_us_floor64(k_cycle_get_64());
@@ -186,17 +249,27 @@ static void control_thread(void *p1, void *p2, void *p3)
 			};
 		}
 
-		motor_debug_output_t debug;
-		if (motor_debug_get_output(&debug)) {
-			send_debug_output(&debug);
-			k_sleep(K_USEC(1000000U / APP_CONTROL_HZ));
-			continue;
+			motor_debug_output_t debug;
+			if (motor_debug_get_output(&debug)) {
+				debug_was_active = true;
+				send_debug_output(&debug);
+				(void)dm4340_poll_rx_fifo(&dm_bus);
+				k_sleep(K_USEC(1000000U / APP_CONTROL_HZ));
+				continue;
+			}
+
+		if (debug_was_active) {
+			(void)dm4340_send_mit(&dm_bus, APP_DM_LEFT_ID, 0.0f,
+					      0.0f, 0.0f, 0.0f, 0.0f);
+			(void)dm4340_send_mit(&dm_bus, APP_DM_RIGHT_ID, 0.0f,
+					      0.0f, 0.0f, 0.0f, 0.0f);
+			(void)dji_m3508_send_group_current(&dji_bus, 0, 0, 0,
+							   0);
+			debug_was_active = false;
 		}
 
 		if (out.wheels_enabled && left_ok && right_ok) {
-			(void)dji_m3508_send_group_current(
-				&dji_bus, out.left_wheel_current,
-				out.right_wheel_current, 0, 0);
+			(void)send_control_wheel_current(&out);
 		} else {
 			(void)dji_m3508_send_group_current(&dji_bus, 0, 0, 0,
 							   0);
@@ -212,6 +285,9 @@ static void control_thread(void *p1, void *p2, void *p3)
 				out.right_joint_position_rad,
 				out.joint_velocity_limit_rad_s);
 		}
+
+		/* Poll CAN RX FIFO directly (ISR workaround) */
+		(void)dm4340_poll_rx_fifo(&dm_bus);
 
 		k_sleep(K_USEC(1000000U / APP_CONTROL_HZ));
 	}
@@ -240,7 +316,8 @@ int main(void)
 
 	(void)dji_m3508_init(&dji_bus, wheel_can, wheel_ids,
 			     ARRAY_SIZE(wheel_ids));
-	(void)dm4340_init(&dm_bus, joint_can, APP_DM_MASTER_ID);
+	(void)dm4340_init(&dm_bus, joint_can, APP_DM_LEFT_FEEDBACK_ID,
+			  APP_DM_RIGHT_FEEDBACK_ID);
 	motor_debug_init(&dji_bus, &dm_bus);
 	(void)dm4340_enable(&dm_bus, APP_DM_LEFT_ID);
 	(void)dm4340_enable(&dm_bus, APP_DM_RIGHT_ID);
@@ -263,8 +340,9 @@ int main(void)
 		control_get_status(&status);
 		const battery_sample_t battery = battery_read();
 
-		set_led(&green_led, heartbeat);
-		set_led(&red_led, status.faulted || !status.wheels_enabled);
+		/* green LED used for CAN RX activity debug */
+		bool dm_online = dm_any_online();
+		set_led(&red_led, !dm_online || status.faulted || !status.wheels_enabled);
 		set_led(&blue_led, battery.valid &&
 				      battery.voltage_v >
 					      APP_BATTERY_LED_THRESHOLD_V);

@@ -162,10 +162,10 @@ motor dm stop right
 
 ```text
 motor wheel status all
-motor wheel current left 100 300
-motor wheel current right 100 300
+motor wheel current left 100 3000
+motor wheel current right 100 3000
 motor wheel rpm left 500 300
-motor wheel pair 100 100 300
+motor wheel pair 100 100 3000
 motor wheel stop
 ```
 

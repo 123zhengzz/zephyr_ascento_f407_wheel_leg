@@ -98,14 +98,15 @@ I_wheel
 | VESC 电流命令到轮端力矩 | `tau_per_current_cmd` | Nm/mA | 输入 `motor wheel current ... 1000`，也就是约 1A 时轮端约多少 Nm |
 | 最大安全电流命令 | `current_safe` | mA | 初调建议很小 |
 
-当前占位：
+当前默认按 M3508 理论力矩常数、减速比和效率计算，左右轮也可以分别覆盖：
 
 ```c
-#define APP_ASCENTO_CURRENT_MA_TO_WHEEL_TORQUE_NM 0.00045f
+#define APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM ...
+#define APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM ...
 #define APP_WHEEL_CURRENT_SAFE 2500
 ```
 
-这个值在当前工程里按 `Nm/mA` 理解，会直接影响平衡输出大小。太小会站不住，太大可能一启用就猛冲。
+这些值在当前工程里按 `Nm/mA` 理解，会直接影响平衡输出大小。太小会站不住，太大可能一启用就猛冲。
 
 建议测法：
 
@@ -253,7 +254,8 @@ APP_ASCENTO_TOTAL_MASS_KG
 APP_ASCENTO_BODY_COM_HEIGHT_M
 APP_ASCENTO_BODY_PITCH_INERTIA_KG_M2
 APP_ASCENTO_WHEEL_INERTIA_KG_M2
-APP_ASCENTO_CURRENT_MA_TO_WHEEL_TORQUE_NM
+APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM
+APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM
 APP_ASCENTO_LEG_LENGTH_MIN_M
 APP_ASCENTO_LEG_LENGTH_MAX_M
 APP_ASCENTO_LEG_LENGTH_DEFAULT_M
@@ -292,7 +294,8 @@ APP_ASCENTO_K_ROLL_TO_LEG_M_PER_RAD
 | 车体 pitch 转动惯量 kg*m^2 |  |
 | 单个轮子转动惯量 kg*m^2 |  |
 | M3508 减速比 |  |
-| VESC 电流命令到轮端力矩 Nm/mA |  |
+| 左 VESC 电流命令到轮端力矩 Nm/mA |  |
+| 右 VESC 电流命令到轮端力矩 Nm/mA |  |
 | 最短腿长 m |  |
 | 最长腿长 m |  |
 | 默认站立腿长 m |  |
