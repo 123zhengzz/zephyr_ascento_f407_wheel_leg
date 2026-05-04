@@ -140,17 +140,26 @@ static void update_attitude(bmi088_t *imu, bmi088_sample_t *sample)
 	}
 	imu->last_update_us = now;
 
-	const float roll_acc = atan2f(sample->ay_g, sample->az_g) *
-			       57.2957795f;
-	const float pitch_acc = atan2f(-sample->ax_g,
-				       sqrtf(sample->ay_g * sample->ay_g +
-					     sample->az_g * sample->az_g)) *
-				57.2957795f;
+	/*
+	 * Attitude with axes remapped for the physical PCB mounting.
+	 *
+	 * On this robot the BMI088 chip X axis points laterally (robot Y,
+	 * roll axis) and chip Y points forward (robot X, pitch axis).
+	 * Therefore:
+	 *   roll  <- accelerometer X / gyro Y
+	 *   pitch <- accelerometer Y / gyro X
+	 */
+	const float roll_acc =
+		atan2f(sample->ax_g, sample->az_g) * 57.2957795f;
+	const float pitch_acc =
+		atan2f(-sample->ay_g,
+		       sqrtf(sample->ax_g * sample->ax_g +
+			     sample->az_g * sample->az_g)) * 57.2957795f;
 
 	const float alpha = 0.985f;
-	imu->roll_deg = alpha * (imu->roll_deg + sample->gx_dps * dt_s) +
+	imu->roll_deg = alpha * (imu->roll_deg + sample->gy_dps * dt_s) +
 			(1.0f - alpha) * roll_acc;
-	imu->pitch_deg = alpha * (imu->pitch_deg + sample->gy_dps * dt_s) +
+	imu->pitch_deg = alpha * (imu->pitch_deg + sample->gx_dps * dt_s) +
 			 (1.0f - alpha) * pitch_acc;
 	imu->yaw_deg += sample->gz_dps * dt_s;
 
@@ -246,9 +255,9 @@ int bmi088_init(bmi088_t *imu)
 		return ret;
 	}
 
-	imu->roll_deg = atan2f(sample.ay_g, sample.az_g) * 57.2957795f;
-	imu->pitch_deg = atan2f(-sample.ax_g,
-				sqrtf(sample.ay_g * sample.ay_g +
+	imu->roll_deg = atan2f(sample.ax_g, sample.az_g) * 57.2957795f;
+	imu->pitch_deg = atan2f(-sample.ay_g,
+				sqrtf(sample.ax_g * sample.ax_g +
 				      sample.az_g * sample.az_g)) *
 			 57.2957795f;
 	imu->yaw_deg = 0.0f;

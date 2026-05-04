@@ -1,3 +1,9 @@
+/*
+ * NOTE: This file is NOT compiled (see CMakeLists.txt).
+ * All control functions (control_init, control_set_enable, control_step, etc.)
+ * are provided by src/pid_balance_control.c, which is the active module.
+ * This file is kept for reference / possible PID-only fallback use.
+ */
 #include "control.h"
 
 #include <math.h>

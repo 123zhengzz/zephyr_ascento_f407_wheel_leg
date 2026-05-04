@@ -94,8 +94,6 @@ motor dm diag right      # 右关节全寄存器诊断
 
 `motor dm reg` 也扩展支持 FAULT/STATUS/CAN_ERR/MOTOR_ERR 等诊断寄存器。
 
-电机不动的深层排查过程详见 [docs/deepseek_4340_debug.md](docs/deepseek_4340_debug.md) 第 10 章。
-
 Motor wiring, smoke-test commands, and Ascento model notes are documented in:
 
 - `README_ZH.md`
@@ -122,3 +120,4 @@ Motor wiring, smoke-test commands, and Ascento model notes are documented in:
 ```
 
 不可用的烧录脚本已禁用，详见 [docs/FLASH_SCRIPT_TEST_REPORT.md](docs/FLASH_SCRIPT_TEST_REPORT.md).
+source ./zephyr-env.sh && ./scripts/flash_dap.sh 2>&1

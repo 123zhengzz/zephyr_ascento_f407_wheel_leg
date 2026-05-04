@@ -41,12 +41,6 @@ docs/VESC_TORQUE_COEFFICIENT_BEGINNER_ZH.md
 docs/FLASH_TROUBLESHOOTING_README_ZH.md
 ```
 
-如果 C 板只有 4pin SWD、没有 NRST，优先看本次成功记录：
-
-```text
-docs/STLINK_4PIN_FLASH_README_ZH.md
-```
-
 Ascento 控制模型总 README，包含已写入参数、缺失数据、测量方法、仿真任务和接入步骤：
 
 ```text
@@ -741,3 +735,4 @@ cd /home/h/code_leg/zephyr_ascento_f407_wheel_leg
 ```bash
 ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
 ```
+./scripts/build.sh && ./scripts/openocd_flash_dap_wl_esp.sh

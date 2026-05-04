@@ -54,10 +54,11 @@
 | 单个轮子转动惯量 | `0.00035 kg*m^2` | 暂时估算，占位待验证 |
 | Ascento 控制增益 | 全部 `0.0` | 尚未计算，模型不能启用 |
 
-当前最危险的占位是两类：
+当前最危险的占位是三类：
 
 - `q <-> L` 腿长映射仍是线性占位，真实四连杆通常不是线性。
 - `APP_ASCENTO_K_*` 控制增益全是 0，模型还不会产生有效平衡控制。
+- 模型代码中**没有任何 IMU 符号修正**，直接使用原始 `pitch_deg`/`gy_dps`/`gz_dps`/`roll_deg`。如果任何一个通道符号与模型假设相反，会导致正反馈失控。
 
 ## 2. 现在还需要哪些数据
 
@@ -65,20 +66,26 @@
 
 | 优先级 | 数据 | 作用 | 当前状态 |
 | --- | --- | --- | --- |
+| **0** | 模型级 IMU 轴方向与符号修正 | 模型直接读 `pitch_deg`/`gy_dps`/`gz_dps`/`roll_deg`，**没有任何符号修正**，符号反了会直接失控 | **未确认，见第 5.4 节** |
 | 1 | 左右达妙关节角正方向 | 判断正角度是伸腿还是收腿 | 未完成 |
-| 1 | 左右关节安全软限位 | 防止四连杆撞机械限位 | 当前只有占位范围 |
+| 1 | 左右关节安全软限位 | 防止四连杆撞机械限位 | 当前只有占位范围，**实测方法见第 4.5 节** |
 | 1 | `q -> L` 腿长表 | 把达妙反馈角换成真实腿长 | 未完成 |
 | 1 | `L -> q` 反解表或函数 | 模型输出目标腿长后转换成关节目标角 | 未完成 |
-| 1 | IMU pitch/roll/gyro 正方向 | 防止反馈符号反了 | pitch 零点已有，轴方向仍要确认 |
-| 2 | 车体 pitch 转动惯量 `I_pitch` | 计算 LQR/仿真 | 只有占位估算 |
-| 2 | 单轮转动惯量 `I_wheel` | 更准确的轮-地动力学 | 只有占位估算 |
+| 1 | IMU pitch/roll/gyro 正方向 | 确认前倾时 pitch 增大还是减小 | pitch 零点已有，轴方向仍要确认 |
+| 1 | 达妙 MIT 模式 KP/KD（模型态） | 模型输出关节目标角后，DM 自身 MIT 控制器需要合适的刚度/阻尼 | 当前 PID 控制器的 KP=18/KD=4 是在 roll 轴平衡下调的，pitch 轴平衡可能需要不同值 |
+| 2 | 车体 pitch 转动惯量 `I_pitch` | 计算 LQR/仿真 | 只有占位估算 `0.060` |
+| 2 | 单轮转动惯量 `I_wheel` | 更准确的轮-地动力学 | 只有占位估算 `0.00035` |
 | 2 | 左右轮实际 `torque_k` 修正 | 补偿两个 VESC/电机差异 | 已有理论值，可后续实测 |
-| 2 | 固定腿长倒立摆控制增益 | 让机器人能站住 | 未计算 |
+| 2 | 固定腿长倒立摆控制增益 | 让机器人能站住 | 未计算，**计算步骤见第 8.5 节** |
+| 2 | 默认站立腿长验证 | 确认 `0.11865 m`（最短最长中点）确实是合适的默认站立高度 | 未验证 |
 | 3 | 腿部质量、质心和惯量 | 更高精度多体模型 | 可后续测 |
 | 3 | 腿长变化时质心高度曲线 | 变腿长时更稳 | 可后续测 |
 | 3 | roll 到左右腿长差增益 | 左右倾斜补偿 | 未调 |
+| 3 | VESC 电流环响应 | 确认 VESC 侧电流 PI 已调好，电流阶跃响应无超调/振荡 | 未验证，可能已默认调好 |
 
-最低限度要完成前 5 项，再加一组很保守的固定腿长平衡增益，才可以开始架空测试模型输出方向。
+> **优先级 0（模型 IMU 符号）是关键差异点**：当前 PID 控制器有 `APP_PID_BALANCE_AXIS_SIGN` 和 `APP_PID_BALANCE_USE_ROLL_AXIS` 两个宏来修正轴方向和符号，但 [src/ascento_balance.c](/home/h/code_leg/zephyr_ascento_f407_wheel_leg/src/ascento_balance.c) 的模型控制器直接使用原始 IMU 值，没有任何符号修正。这意味着即使 PID 控制器能正常平衡，模型控制器可能因为 IMU 符号相反导致正反馈失控。必须在启用模型前单独确认模型使用的 IMU 通道符号。
+
+最低限度要完成优先级 0 和优先级 1 的全部 7 项，再加一组很保守的固定腿长平衡增益，才可以开始架空测试模型输出方向。
 
 ## 3. 测量前安全命令
 
@@ -221,6 +228,49 @@ ascento_balance_joint_from_leg_length(...)
 - `L -> q`：用同一张表反向查表插值。
 - 超出表格范围时强制限幅，不允许命令跑到机械极限外。
 
+### 4.5 测关节安全软限位
+
+目标：找到左右 DM4340 关节的机械安全范围，给 `APP_ASCENTO_LEFT_JOINT_AT_MIN_LEG_RAD` / `APP_ASCENTO_LEFT_JOINT_AT_MAX_LEG_RAD` 等宏填真实值。
+
+**关键**：这个测试必须比 `q -> L` 表更早做，因为如果不知道安全范围，测腿长表时可能撞机械限位。
+
+步骤：
+
+1. 轮子架空，确保四连杆不会碰地。
+
+2. 用达妙调试命令手动小幅移动关节，向缩短腿的方向走，直到感觉即将碰到机械限位：
+
+   ```text
+   motor dm wiggle left 0.01 2000 18 0.4 3000
+   motor dm wiggle right 0.01 2000 18 0.4 3000
+   ```
+
+   调整幅度 `0.01` 为更小值（如 `0.005`）来缓慢逼近。
+
+3. 每次移动后执行：
+
+   ```text
+   motor dm status left
+   motor dm status right
+   ```
+
+   记录当前关节角，并观察连杆是否即将碰到硬止挡。
+
+4. 对伸腿方向重复同样的操作。
+
+5. **在记录到的机械极限角上各留至少 0.03 到 0.05 rad 的安全余量**，作为软限位。
+
+6. 填入表格：
+
+| 参数 | 值 | 说明 |
+| --- | --- | --- |
+| 左关节最小安全角 rad | 待测 | 收腿最短，留余量 |
+| 左关节最大安全角 rad | 待测 | 伸腿最长，留余量 |
+| 右关节最小安全角 rad | 待测 | 收腿最短，留余量 |
+| 右关节最大安全角 rad | 待测 | 伸腿最长，留余量 |
+
+**注意左右不对称**：左右腿的四连杆构型可能是镜像的，关节角范围和方向可能不同（例如左腿 `q` 增大 = 伸腿，右腿 `q` 增大 = 收腿）。必须分别测，不要假设对称。
+
 ## 5. 如何确认 IMU 方向
 
 pitch 零点已经测得：
@@ -267,6 +317,63 @@ robot status
 ### 5.3 yaw gyro 方向
 
 原地轻微向左转、向右转，观察 `yaw` 或 `gz` 的变化。后续 `APP_ASCENTO_K_YAW_RATE` 需要用这个方向。
+
+### 5.4 模型级 IMU 符号确认（关键差异点）
+
+**这是最容易导致模型控制器首次启用时失控的问题。**
+
+当前 PID 平衡控制器 (`pid_balance_control.c`) 和 Ascento 模型控制器 (`ascento_balance.c`) **使用的是完全不同的 IMU 路径**：
+
+| 项目 | PID 控制器 | Ascento 模型 |
+| --- | --- | --- |
+| 平衡轴 | `APP_PID_BALANCE_USE_ROLL_AXIS` 可选 pitch/roll | **固定用 pitch** |
+| 符号修正 | `APP_PID_BALANCE_AXIS_SIGN` 可翻转 | **无符号修正** |
+| pitch 来源 | 通过 `balance_angle_deg()` 间接使用 | 直接读 `imu.pitch_deg` |
+| pitch rate 来源 | 通过 `balance_gyro_dps()` 间接使用 | 直接读 `imu.gy_dps` |
+| yaw rate 来源 | 不使用 | 直接读 `imu.gz_dps` |
+| roll 来源 | 不使用 | 直接读 `imu.roll_deg`（用于 roll 补偿） |
+
+也就是说，即使 PID 平衡控制器已经能站住，**模型控制器可能因为有符号差异而导致正反馈**。
+
+确认方法：
+
+1. 先确认 PID 控制器当前使用的轴配置：
+   ```text
+   // 在 app_config.h 中查看当前值
+   #define APP_PID_BALANCE_USE_ROLL_AXIS 1   // 1=roll轴, 0=pitch轴
+   #define APP_PID_BALANCE_AXIS_SIGN 1.0f       // 1=不反号, -1=反号
+   ```
+
+2. 在串口观察 `robot status` 的实时 pitch 值。
+
+3. 手动让车体前倾，记录 `pitch_deg` 变化方向：
+   - 如果前倾时 `pitch_deg` **增大**（正），则模型需要的符号为 `pitch * (+1)` → 不需要反号。
+   - 如果前倾时 `pitch_deg` **减小**（负），则模型需要在代码中加入 `-pitch` 或 `APP_ASCENTO_IMU_PITCH_SIGN -1`。
+
+4. 同样检查 `gy_dps`（pitch 角速度）：
+   - 前倾转动时，`gy_dps` 应与 pitch 变化同号。
+   - 如果 `gy_dps` 符号与 pitch 变化方向相反，模型也需要反号。
+
+5. 检查 `gz_dps`（yaw 角速度）：
+   - 从上方看，顺时针转动机器人，`gz_dps` 应为正（右手定则：z 轴向上）。
+   - 模型代码 `yaw_rate_rad_s = imu.gz_dps * DEG_TO_RAD`，然后 `-params->k_yaw_rate * yaw_rate_rad_s` 产生负反馈。
+   - 如果 `gz_dps` 与你预期的方向相反，需要在代码中加 `APP_ASCENTO_IMU_GZ_SIGN -1`。
+
+6. 检查 `roll_deg`：
+   - 左倾时 `roll_deg` 应为正（右手定则：x 轴向前）。
+   - 模型中 `roll_leg_delta = roll * k_roll_to_leg_m_per_rad`，左倾正 roll 应该让左腿伸长、右腿缩短来补偿。
+   - 如果 roll 符号反了，补偿方向也会反。
+
+测试后填入：
+
+| 项目 | 测试结果 | 模型需要修正 |
+| --- | --- | --- |
+| 前倾 pitch | 增大 / 减小 | 是否需要 `-1` |
+| 前倾 gy_dps | 正 / 负 | 是否需要 `-1` |
+| 顺时针 gz_dps | 正 / 负 | 是否需要 `-1` |
+| 左倾 roll | 正 / 负 | 是否需要 `-1` |
+
+**当前模型代码中这四个通道都没有符号修正宏**。如果任何一个通道需要反号，必须先修改 [src/ascento_balance.c](/home/h/code_leg/zephyr_ascento_f407_wheel_leg/src/ascento_balance.c) 中对应的读取行（第 188-193 行），才能安全启用模型。
 
 ## 6. 如何测转动惯量
 
@@ -471,13 +578,182 @@ right_wheel_torque_Nm
 - MATLAB/Simulink：适合控制建模。
 - MuJoCo 或 PyBullet：适合检查多体运动和四连杆干涉。
 
+### 8.5 如何从物理参数计算 LQR 增益
+
+对于固定腿长的两轮倒立摆，可以手工推导状态空间模型，然后在 Python 中求解 LQR 得到第一版增益。
+
+#### 状态定义
+
+```
+x = [θ, θ̇, φ, φ̇]ᵀ
+θ  = pitch 角 (rad)，车体前倾为正
+θ̇ = pitch 角速度 (rad/s)
+φ  = 轮子平均角位置 (rad)，前进为正
+φ̇ = 轮子平均角速度 (rad/s)
+```
+
+全部取离平衡点的偏差量。
+
+#### 输入
+
+```
+u = τ_wheel  (Nm)  轮端总力矩（左右轮之和的半值，即单轮等效驱动力矩）
+实际左右轮力矩分配: τ_L = u - τ_yaw, τ_R = u + τ_yaw
+```
+
+#### 物理参数
+
+| 符号 | 含义 | 当前值 | 单位 |
+| --- | --- | --- | --- |
+| m_b | 车体质量 | 2.315 | kg |
+| I_b | 车体绕轮轴 pitch 转动惯量 | `APP_ASCENTO_BODY_PITCH_INERTIA_KG_M2` | kg·m² |
+| I_w | 单轮转动惯量 | `APP_ASCENTO_WHEEL_INERTIA_KG_M2` | kg·m² |
+| r | 轮半径 | 0.030 | m |
+| L | 质心到轮轴距离 (腿长 + 质心高度) | 0.098 | m |
+| g | 重力加速度 | 9.81 | m/s² |
+
+#### 推导线性化动力学
+
+取轮-地间纯滚动无滑移假设。拉格朗日推导后在 θ≈0 线性化：
+
+运动方程（两轮倒立摆标准形式）：
+
+```
+(m_b·L² + I_b)·θ̈ + m_b·L·r·φ̈ - m_b·g·L·θ = -τ_wheel
+m_b·L·r·θ̈ + (m_b·r² + 2·I_w)·φ̈ = τ_wheel
+```
+
+整理为标准状态空间 `ẋ = A·x + B·u`：
+
+定义辅助常数：
+```
+a = m_b·L² + I_b
+b = m_b·L·r
+c = m_b·r² + 2·I_w
+d = m_b·g·L
+det = a·c - b²
+```
+
+则：
+```
+A = [[0, 1, 0, 0],
+     [c·d/det, 0, 0, 0],
+     [0, 0, 0, 1],
+     [-b·d/det, 0, 0, 0]]
+
+B = [[0],
+     [-(c+b)/det],
+     [0],
+     [(a+b)/det]]
+```
+
+#### Python LQR 求解脚本模板
+
+```python
+import numpy as np
+import scipy.linalg
+
+# 填入实测参数
+m_b = 2.315       # 车体质量 kg
+I_b = 0.060       # 车体 pitch 惯量 kg*m²
+I_w = 0.00035     # 单轮惯量 kg*m²
+r   = 0.030       # 轮半径 m
+L   = 0.098       # 质心到轮轴垂直距离 m (当前 = COM height，假设轮轴在 COM 正下方)
+g   = 9.81
+
+# 辅助常数 (注意: L 这里指质心到轮轴的垂直距离，不是腿长)
+a = m_b * L**2 + I_b
+b = m_b * L * r
+c = m_b * r**2 + 2.0 * I_w
+d = m_b * g * L
+det = a * c - b**2
+
+A = np.array([
+    [0, 1, 0, 0],
+    [c*d/det, 0, 0, 0],
+    [0, 0, 0, 1],
+    [-b*d/det, 0, 0, 0]
+])
+
+B = np.array([
+    [0],
+    [-(c+b)/det],
+    [0],
+    [(a+b)/det]
+])
+
+# LQR 权重矩阵 —— 需要根据实际调试
+# Q 增大 = 对该状态惩罚更大 = 增益更高
+Q = np.diag([
+    500.0,    # θ  pitch 角权重
+    50.0,     # θ̇ pitch 角速度权重
+    10.0,     # φ  位置权重
+    30.0      # φ̇ 速度权重
+])
+
+R = np.array([[0.1]])  # 控制力矩权重 (越小 → 增益越高 → 力矩越大)
+
+# 求解 LQR
+P = scipy.linalg.solve_continuous_are(A, B, Q, R)
+K = np.linalg.solve(R, B.T @ P)
+
+print("K =", K)
+# K[0] = K_pitch, K[1] = K_pitch_rate, K[2] = K_position, K[3] = K_velocity
+print(f"APP_ASCENTO_K_PITCH      = {K[0,0]:.3f}")
+print(f"APP_ASCENTO_K_PITCH_RATE = {K[0,1]:.3f}")
+print(f"APP_ASCENTO_K_POSITION   = {K[0,2]:.3f}")
+print(f"APP_ASCENTO_K_VELOCITY   = {K[0,3]:.3f}")
+
+# 检查闭环极点
+eigvals = np.linalg.eigvals(A - B @ K)
+print(f"闭环极点: {eigvals}")
+print(f"主导极点实部: {np.max(np.real(eigvals)):.4f} (应 < 0)")
+```
+
+#### 增益调试顺序
+
+**不要一次把所有增益都填进去**：
+
+1. **先只调 K_pitch 和 K_pitch_rate**（K_position = K_velocity = 0）。让机器人能原地站立不倒。
+2. 站立稳定后，**再加入 K_velocity**（小值开始，如 10-50），让机器人能对抗微小推搡。
+3. 最后加入 **K_position**（小值开始），让机器人能回到原位。
+
+#### K_yaw_rate 计算
+
+Yaw 控制是独立的，不需要 LQR。从轮距和车轮动力学推导：
+
+```
+τ_yaw = K_yaw_rate * (yaw_rate_target - yaw_rate_actual)
+
+最大 yaw 力矩 ≈ K_yaw_rate * 1.0 rad/s  (设计点)
+
+τ_yaw_max = F_wheel * (wheel_base / 2)
+          = (τ_wheel / r) * (wheel_base / 2)
+          = (I_lim * torque_k / r) * (0.201 / 2)
+```
+
+取保守值：从 0.5 Nm/(rad/s) 开始，逐步上调。
+
+#### K_roll_to_leg_m_per_rad
+
+这个增益目前模型中设为 0。它决定倾斜时左右腿长差：
+
+```
+left_leg_length  = target_leg - roll * K_roll_to_leg
+right_leg_length = target_leg + roll * K_roll_to_leg
+```
+
+初始建议：取 0.05 m/rad，即 1 度 roll 约产生 0.87 mm 腿长差。等 pitch 平衡调稳定后再加这个补偿。
+
 ## 9. 模型接入前的软件任务
 
 接入前至少完成：
 
+- **确认模型级 IMU 四个通道符号**（pitch/gy_dps/gz_dps/roll），如需要则给 [src/ascento_balance.c](/home/h/code_leg/zephyr_ascento_f407_wheel_leg/src/ascento_balance.c) 第 188-193 行添加 `APP_ASCENTO_IMU_*_SIGN` 宏。
 - 把 `q <-> L` 线性映射改成查表插值或解析反解。
 - 把转动惯量估算值更新到 `APP_ASCENTO_BODY_PITCH_INERTIA_KG_M2` 和 `APP_ASCENTO_WHEEL_INERTIA_KG_M2`。
-- 计算并填入 `APP_ASCENTO_K_*`。
+- 用 LQR 脚本计算并填入 `APP_ASCENTO_K_*` 第一版增益。
+- 确认 DM MIT 控制参数（KP/KD）适合 pitch 轴平衡（当前 18/4 是在 roll 轴下调的）。
 - 把 `APP_WHEEL_CURRENT_LIMIT` 临时降到保守值，例如先不超过 `1000` 到 `1500 mA`。
 - 确认 `APP_PITCH_FAULT_DEG` 足够保守。
 - 确认启用模型前参数检查生效。
@@ -509,14 +785,18 @@ right_wheel_torque_Nm
 
 | 项目 | 当前值 / 待填 |
 | --- | --- |
-| 左关节正角度方向 | 待测 |
-| 右关节正角度方向 | 待测 |
-| 左关节安全最小角 rad | 待测 |
-| 左关节安全最大角 rad | 待测 |
-| 右关节安全最小角 rad | 待测 |
-| 右关节安全最大角 rad | 待测 |
-| 左腿 `q -> L` 表 | 待测 |
-| 右腿 `q -> L` 表 | 待测 |
+| 模型级 pitch 符号（前倾时 pitch 增大/减小） | 待测 |
+| 模型级 gy_dps 符号（前倾转动时正/负） | 待测 |
+| 模型级 gz_dps 符号（顺时针转时正/负） | 待测 |
+| 模型级 roll 符号（左倾时正/负） | 待测 |
+| 左关节正角度方向（增大 = 伸腿/收腿） | 待测 |
+| 右关节正角度方向（增大 = 伸腿/收腿） | 待测 |
+| 左关节安全最小角 rad（收腿方向，留余量） | 待测 |
+| 左关节安全最大角 rad（伸腿方向，留余量） | 待测 |
+| 右关节安全最小角 rad（收腿方向，留余量） | 待测 |
+| 右关节安全最大角 rad（伸腿方向，留余量） | 待测 |
+| 左腿 `q -> L` 表（10-15 点） | 待测 |
+| 右腿 `q -> L` 表（10-15 点） | 待测 |
 | IMU 前倾时 pitch 符号 | 待测 |
 | IMU 左倾时 roll 符号 | 待测 |
 | yaw gyro 正方向 | 待测 |
@@ -524,8 +804,10 @@ right_wheel_torque_Nm
 | 单个轮子转动惯量 `I_wheel` | 待估算/实测 |
 | 左轮实测 `torque_k` | 可选，当前用理论值 |
 | 右轮实测 `torque_k` | 可选，当前用理论值 |
-| `APP_ASCENTO_K_PITCH` | 待仿真/调参 |
-| `APP_ASCENTO_K_PITCH_RATE` | 待仿真/调参 |
+| DM MIT 模型态 KP（pitch 轴平衡用） | 当前 PID 用 18，模型可能需要不同值 |
+| DM MIT 模型态 KD（pitch 轴平衡用） | 当前 PID 用 4，模型可能需要不同值 |
+| `APP_ASCENTO_K_PITCH` | 待 LQR 求解/调参 |
+| `APP_ASCENTO_K_PITCH_RATE` | 待 LQR 求解/调参 |
 | `APP_ASCENTO_K_POSITION` | 待仿真/调参 |
 | `APP_ASCENTO_K_VELOCITY` | 待仿真/调参 |
 | `APP_ASCENTO_K_YAW_RATE` | 待仿真/调参 |

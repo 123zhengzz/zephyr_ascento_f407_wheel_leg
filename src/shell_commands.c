@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -309,7 +310,27 @@ static int cmd_robot_zero(const struct shell *sh, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 
-	const float zero = strtof(argv[1], NULL);
+	float zero;
+
+	if (strcmp(argv[1], "now") == 0) {
+		control_status_t st;
+
+		control_get_status(&st);
+#if APP_PID_BALANCE_USE_ROLL_AXIS
+		zero = APP_PID_BALANCE_AXIS_SIGN * st.roll_deg;
+#else
+		zero = APP_PID_BALANCE_AXIS_SIGN * st.pitch_deg;
+#endif
+		if (fabsf(zero) > APP_PID_BALANCE_ZERO_NOW_LIMIT_DEG) {
+			shell_error(sh,
+				    "zero now refused at %.2f deg; hold robot upright or use robot zero <deg>",
+				    (double)zero);
+			return -EINVAL;
+		}
+	} else {
+		zero = strtof(argv[1], NULL);
+	}
+
 	control_set_angle_zero(zero);
 	shell_print(sh, "balance zero set to %.2f deg", (double)zero);
 	return 0;
@@ -1192,7 +1213,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_robot_motion, 2, 0),
 	SHELL_CMD_ARG(stop, NULL, "robot stop", cmd_robot_stop, 1, 0),
 	SHELL_CMD_ARG(jump, NULL, "robot jump", cmd_robot_jump, 1, 0),
-	SHELL_CMD_ARG(zero, NULL, "robot zero <pitch_zero_deg>",
+	SHELL_CMD_ARG(zero, NULL, "robot zero <deg|now>",
 		      cmd_robot_zero, 2, 0),
 	SHELL_CMD_ARG(status, NULL, "robot status", cmd_robot_status, 1, 0),
 	SHELL_CMD_ARG(pid, NULL,

@@ -65,7 +65,9 @@ void control_set_motion(robot_motion_t motion);
 void control_request_jump(void);
 void control_stop_motion(void);
 void control_set_angle_zero(float zero_deg);
+bool control_get_enable_request(void);
 void control_get_status(control_status_t *status);
+void control_publish_status(const control_status_t *status);
 void control_get_pid_balance_params(control_pid_balance_params_t *params);
 void control_set_pid_balance_params(
 	const control_pid_balance_params_t *params);

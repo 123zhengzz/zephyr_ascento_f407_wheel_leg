@@ -104,15 +104,10 @@ static void apply_pid_output_limit(float limit)
 static void fixed_joint_targets(int height, float *left_joint,
 				float *right_joint)
 {
-	const float height_term =
-		(float)(height - APP_HEIGHT_MIN) * APP_LEG_RAD_PER_HEIGHT_UNIT;
+	ARG_UNUSED(height);
 
-	*left_joint = app_clampf(APP_LEFT_LEG_ZERO_RAD + height_term,
-				 APP_LEFT_LEG_MIN_RAD,
-				 APP_LEFT_LEG_MAX_RAD);
-	*right_joint = app_clampf(APP_RIGHT_LEG_ZERO_RAD - height_term,
-				  APP_RIGHT_LEG_MIN_RAD,
-				  APP_RIGHT_LEG_MAX_RAD);
+	*left_joint = APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD;
+	*right_joint = APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD;
 }
 
 void control_init(void)
@@ -144,6 +139,7 @@ void control_set_enable(bool enable)
 	k_mutex_lock(&ctx.lock, K_FOREVER);
 	ctx.enable_request = enable;
 	ctx.last_cmd_ms = k_uptime_get();
+	ctx.status.enable_request = enable;
 	reset_balance_pids();
 	if (enable) {
 		ctx.faulted = false;
@@ -202,6 +198,17 @@ void control_set_angle_zero(float zero_deg)
 	k_mutex_unlock(&ctx.lock);
 }
 
+bool control_get_enable_request(void)
+{
+	bool enable;
+
+	k_mutex_lock(&ctx.lock, K_FOREVER);
+	enable = ctx.enable_request;
+	k_mutex_unlock(&ctx.lock);
+
+	return enable;
+}
+
 void control_get_status(control_status_t *status)
 {
 	if (status == NULL) {
@@ -210,6 +217,17 @@ void control_get_status(control_status_t *status)
 
 	k_mutex_lock(&ctx.lock, K_FOREVER);
 	*status = ctx.status;
+	k_mutex_unlock(&ctx.lock);
+}
+
+void control_publish_status(const control_status_t *status)
+{
+	if (status == NULL) {
+		return;
+	}
+
+	k_mutex_lock(&ctx.lock, K_FOREVER);
+	ctx.status = *status;
 	k_mutex_unlock(&ctx.lock);
 }
 
@@ -359,9 +377,28 @@ void control_step(const bmi088_sample_t *imu, const dji_m3508_motor_t *left,
 			       distance - ctx.distance_zero_rad, dt_s);
 	const float speed_output =
 		app_pid_update(&ctx.speed_pid, speed - speed_target, dt_s);
+	const float drive_output =
+		filtered_joy_y * APP_PID_BALANCE_JOY_TO_CURRENT;
 
 	float balance_output =
-		angle_output + gyro_output + distance_output + speed_output;
+		angle_output + gyro_output + distance_output + speed_output -
+		drive_output;
+	if (APP_PID_BALANCE_STICTION_FULL_DEG >
+	    APP_PID_BALANCE_STICTION_START_DEG) {
+		const float stiction_scale = app_clampf(
+			(fabsf(angle_error) -
+			 APP_PID_BALANCE_STICTION_START_DEG) /
+				(APP_PID_BALANCE_STICTION_FULL_DEG -
+				 APP_PID_BALANCE_STICTION_START_DEG),
+			0.0f, 1.0f);
+
+		if (stiction_scale > 0.0f && fabsf(balance_output) > 1.0f) {
+			balance_output += copysignf(
+				APP_PID_BALANCE_STICTION_CURRENT *
+					stiction_scale,
+				balance_output);
+		}
+	}
 	balance_output = app_clampf(balance_output, -current_limit_ma,
 				    current_limit_ma);
 
@@ -369,6 +406,11 @@ void control_step(const bmi088_sample_t *imu, const dji_m3508_motor_t *left,
 	yaw_output = app_clampf(yaw_output,
 				-APP_PID_BALANCE_YAW_CURRENT_LIMIT,
 				APP_PID_BALANCE_YAW_CURRENT_LIMIT);
+	const float wheel_sync_output = app_clampf(
+		(right_wheel_speed - left_wheel_speed) *
+			APP_PID_BALANCE_WHEEL_SYNC_P,
+		-APP_PID_BALANCE_WHEEL_SYNC_CURRENT_LIMIT,
+		APP_PID_BALANCE_WHEEL_SYNC_CURRENT_LIMIT);
 
 	if (fabsf(angle_error) > APP_PITCH_FAULT_DEG) {
 		ctx.faulted = true;
@@ -392,9 +434,11 @@ void control_step(const bmi088_sample_t *imu, const dji_m3508_motor_t *left,
 	const bool motor_feedback_ok = left->initialized && right->initialized;
 	const bool wheels_enabled = enable && !ctx.faulted && motor_feedback_ok;
 	int32_t left_current = (int32_t)lrintf(-0.5f *
-					       (balance_output + yaw_output));
+					       (balance_output + yaw_output) +
+					       wheel_sync_output);
 	int32_t right_current = (int32_t)lrintf(-0.5f *
-						(balance_output - yaw_output));
+						(balance_output - yaw_output) -
+						wheel_sync_output);
 
 	if (!wheels_enabled) {
 		left_current = 0;

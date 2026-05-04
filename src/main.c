@@ -11,6 +11,7 @@
 #include <zephyr/sys/util.h>
 
 #include "app_config.h"
+#include "ascento_balance.h"
 #include "battery.h"
 #include "bmi088.h"
 #include "control.h"
@@ -38,6 +39,12 @@ static const struct gpio_dt_spec blue_led = GPIO_DT_SPEC_GET(LED_BLUE_NODE,
 static dji_m3508_bus_t dji_bus;
 static dm4340_bus_t dm_bus;
 static bmi088_t imu;
+
+static bmi088_sample_t last_imu_sample;
+
+#if APP_USE_ASCENTO_BALANCE_CONTROLLER
+static ascento_balance_state_t ascento_state;
+#endif
 
 K_THREAD_STACK_DEFINE(control_stack, 4096);
 static struct k_thread control_thread_data;
@@ -124,6 +131,27 @@ static int send_control_wheel_current(const control_output_t *out)
 		apply_wheel_forward_sign(out->right_wheel_current,
 					 APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN),
 		0, 0);
+}
+
+static void send_control_joints(const control_output_t *out)
+{
+#if APP_PID_BALANCE_JOINT_USE_MIT
+	(void)dm4340_send_mit(&dm_bus, APP_DM_LEFT_ID,
+			      out->left_joint_position_rad, 0.0f,
+			      APP_PID_BALANCE_JOINT_MIT_KP,
+			      APP_PID_BALANCE_JOINT_MIT_KD, 0.0f);
+	(void)dm4340_send_mit(&dm_bus, APP_DM_RIGHT_ID,
+			      out->right_joint_position_rad, 0.0f,
+			      APP_PID_BALANCE_JOINT_MIT_KP,
+			      APP_PID_BALANCE_JOINT_MIT_KD, 0.0f);
+#else
+	(void)dm4340_send_pos_vel(&dm_bus, APP_DM_LEFT_ID,
+				  out->left_joint_position_rad,
+				  out->joint_velocity_limit_rad_s);
+	(void)dm4340_send_pos_vel(&dm_bus, APP_DM_RIGHT_ID,
+				  out->right_joint_position_rad,
+				  out->joint_velocity_limit_rad_s);
+#endif
 }
 
 static void send_debug_output(const motor_debug_output_t *debug)
@@ -221,21 +249,117 @@ static void control_thread(void *p1, void *p2, void *p3)
 			right_present &&
 			(now_ms - right_motor.last_update_ms) <=
 				APP_VESC_FEEDBACK_TIMEOUT_MS;
+		const bool enable_request = control_get_enable_request();
 
 		if (imu_ret == 0) {
+			last_imu_sample = imu_sample;
 			if (!left_ok) {
 				left_motor = (dji_m3508_motor_t){ 0 };
 			}
 			if (!right_ok) {
 				right_motor = (dji_m3508_motor_t){ 0 };
 			}
+#if APP_USE_ASCENTO_BALANCE_CONTROLLER
+			dm4340_feedback_t left_jt, right_jt;
+			const bool ljt = dm4340_get(&dm_bus, APP_DM_LEFT_ID,
+						    &left_jt);
+			const bool rjt = dm4340_get(&dm_bus, APP_DM_RIGHT_ID,
+						    &right_jt);
+
+			const ascento_balance_params_t *ap =
+				&ascento_balance_default_params;
+
+			const ascento_balance_input_t ai = {
+				.enable_request = enable_request,
+				.wheel_feedback_ok = left_ok && right_ok,
+				.dt_s = dt_s,
+				.target_forward_speed_mps = 0.0f,
+				.target_yaw_rate_rad_s = 0.0f,
+				.target_leg_length_m = APP_ASCENTO_LEG_LENGTH_STAND_M,
+				.target_pitch_rad = 0.0f,
+				.left_joint_position_rad =
+					ljt ? left_jt.position_rad : 0.0f,
+				.right_joint_position_rad =
+					rjt ? right_jt.position_rad : 0.0f,
+				.left_joint_velocity_rad_s =
+					ljt ? left_jt.velocity_rad_s : 0.0f,
+				.right_joint_velocity_rad_s =
+					rjt ? right_jt.velocity_rad_s : 0.0f,
+				.imu = imu_sample,
+				.left_wheel = left_motor,
+				.right_wheel = right_motor,
+			};
+
+			ascento_balance_output_t ao;
+			ascento_balance_update(&ascento_state, ap, &ai, &ao);
+
+			if (ao.active) {
+				out.wheels_enabled = true;
+				out.joints_enabled = true;
+				out.left_wheel_current =
+					ao.left_wheel_current;
+				out.right_wheel_current =
+					ao.right_wheel_current;
+				out.left_joint_position_rad =
+					ao.left_joint_position_rad;
+				out.right_joint_position_rad =
+					ao.right_joint_position_rad;
+				out.joint_velocity_limit_rad_s =
+					ao.joint_velocity_limit_rad_s;
+			} else {
+				out.wheels_enabled = false;
+				out.joints_enabled = true;
+				out.left_wheel_current = 0;
+				out.right_wheel_current = 0;
+				out.left_joint_position_rad =
+					APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD;
+				out.right_joint_position_rad =
+					APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD;
+				out.joint_velocity_limit_rad_s =
+					APP_LEG_VEL_LIMIT_RAD_S;
+			}
+#else
 			control_step(&imu_sample, &left_motor, &right_motor,
 				     dt_s, &out);
+#endif
+			/* Wheels only active when enabled (safety).
+			 * Joints always hold their lock position so the legs
+			 * don't collapse to mechanical minimum at startup. */
+			if (!enable_request) {
+				out.wheels_enabled = false;
+				out.left_wheel_current = 0;
+				out.right_wheel_current = 0;
+			}
 			if (!left_ok || !right_ok) {
 				out.wheels_enabled = false;
 				out.left_wheel_current = 0;
 				out.right_wheel_current = 0;
 			}
+#if APP_USE_ASCENTO_BALANCE_CONTROLLER
+			control_publish_status(&(control_status_t) {
+				.enable_request = enable_request,
+				.wheels_enabled = out.wheels_enabled,
+				.faulted = ao.faulted,
+				.height = APP_DEFAULT_HEIGHT,
+				.joy_x = 0.0f,
+				.joy_y = 0.0f,
+				.motion = ROBOT_STOP,
+				.pitch_deg = imu_sample.pitch_deg,
+				.roll_deg = imu_sample.roll_deg,
+				.yaw_deg = imu_sample.yaw_deg,
+				.distance_rad = ao.body_position_m,
+				.speed_rad_s = ao.body_velocity_mps,
+				.lqr_output = ao.balance_torque_nm,
+				.yaw_output = ao.yaw_torque_nm,
+				.left_joint_position_rad =
+					out.left_joint_position_rad,
+				.right_joint_position_rad =
+					out.right_joint_position_rad,
+				.left_wheel_current = out.left_wheel_current,
+				.right_wheel_current = out.right_wheel_current,
+				.jump_phase = 0,
+			});
+#endif
 		} else {
 			out = (control_output_t) {
 				.wheels_enabled = false,
@@ -251,8 +375,8 @@ static void control_thread(void *p1, void *p2, void *p3)
 			};
 		}
 
-			motor_debug_output_t debug;
-			if (motor_debug_get_output(&debug)) {
+		motor_debug_output_t debug;
+		if (motor_debug_get_output(&debug)) {
 				debug_was_active = true;
 				send_debug_output(&debug);
 				(void)dm4340_poll_rx_fifo(&dm_bus);
@@ -261,12 +385,12 @@ static void control_thread(void *p1, void *p2, void *p3)
 			}
 
 		if (debug_was_active) {
-			(void)dm4340_send_mit(&dm_bus, APP_DM_LEFT_ID, 0.0f,
-					      0.0f, 0.0f, 0.0f, 0.0f);
-			(void)dm4340_send_mit(&dm_bus, APP_DM_RIGHT_ID, 0.0f,
-					      0.0f, 0.0f, 0.0f, 0.0f);
 			(void)dji_m3508_send_group_current(&dji_bus, 0, 0, 0,
 							   0);
+			/* Re-enable DM motors — they may have timed out during
+			 * debug mode where no MIT commands were sent. */
+			(void)dm4340_enable(&dm_bus, APP_DM_LEFT_ID);
+			(void)dm4340_enable(&dm_bus, APP_DM_RIGHT_ID);
 			debug_was_active = false;
 		}
 
@@ -278,14 +402,7 @@ static void control_thread(void *p1, void *p2, void *p3)
 		}
 
 		if (out.joints_enabled) {
-			(void)dm4340_send_pos_vel(
-				&dm_bus, APP_DM_LEFT_ID,
-				out.left_joint_position_rad,
-				out.joint_velocity_limit_rad_s);
-			(void)dm4340_send_pos_vel(
-				&dm_bus, APP_DM_RIGHT_ID,
-				out.right_joint_position_rad,
-				out.joint_velocity_limit_rad_s);
+			send_control_joints(&out);
 		}
 
 		/* Poll CAN RX FIFO directly (ISR workaround) */
@@ -300,6 +417,9 @@ int main(void)
 	LOG_INF("DJI F407 Ascento wheel-leg Zephyr app boot");
 	leds_init();
 	control_init();
+#if APP_USE_ASCENTO_BALANCE_CONTROLLER
+	ascento_balance_init(&ascento_state);
+#endif
 
 	if (prepare_can(joint_can, "CAN joint DM43xx") != 0) {
 		LOG_ERR("joint CAN is required");
@@ -350,20 +470,24 @@ int main(void)
 					      APP_BATTERY_LED_THRESHOLD_V);
 
 		if (battery.valid) {
-			LOG_INF("pitch %.2f roll %.2f speed %.2f current %d/%d "
+			LOG_INF("pitch %.2f roll %.2f yaw %.1f gy %.1f gz %.1f current %d/%d "
 				"height %d batt %.2f V",
-				(double)status.pitch_deg,
-				(double)status.roll_deg,
-				(double)status.speed_rad_s,
+				(double)last_imu_sample.pitch_deg,
+				(double)last_imu_sample.roll_deg,
+				(double)last_imu_sample.yaw_deg,
+				(double)last_imu_sample.gy_dps,
+				(double)last_imu_sample.gz_dps,
 				status.left_wheel_current,
 				status.right_wheel_current, status.height,
 				(double)battery.voltage_v);
 		} else {
-			LOG_INF("pitch %.2f roll %.2f speed %.2f current %d/%d "
+			LOG_INF("pitch %.2f roll %.2f yaw %.1f gy %.1f gz %.1f current %d/%d "
 				"height %d",
-				(double)status.pitch_deg,
-				(double)status.roll_deg,
-				(double)status.speed_rad_s,
+				(double)last_imu_sample.pitch_deg,
+				(double)last_imu_sample.roll_deg,
+				(double)last_imu_sample.yaw_deg,
+				(double)last_imu_sample.gy_dps,
+				(double)last_imu_sample.gz_dps,
 				status.left_wheel_current,
 				status.right_wheel_current, status.height);
 		}

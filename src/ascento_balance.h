@@ -71,6 +71,8 @@ typedef struct {
 
 typedef struct {
 	bool initialized;
+	bool faulted;
+	int recover_ticks;
 	float body_position_m;
 	float body_velocity_lpf_mps;
 	float yaw_rate_lpf_rad_s;
