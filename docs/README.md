@@ -6,6 +6,9 @@
 |----------|-------------|
 | [wiring_build_flash.md](wiring_build_flash.md) | Hardware wiring, build, and flash quick reference |
 | [bringup_checklist.md](bringup_checklist.md) | 13-step power-on bringup checklist |
+| [STAND_UP_TUNING_QUICKSTART_ZH.md](STAND_UP_TUNING_QUICKSTART_ZH.md) | On-site command sequence for standing tuning |
+| [ASCENTO_PARAM_TUNING_MANUAL_ZH.md](ASCENTO_PARAM_TUNING_MANUAL_ZH.md) | Current Ascento balance parameter meaning and tuning manual |
+| [STANDING_ADJUSTMENT_STRATEGY_ZH.md](STANDING_ADJUSTMENT_STRATEGY_ZH.md) | Strategy for diagnosing why the robot still cannot stand |
 | [GIT_USAGE.md](GIT_USAGE.md) | Git workflow and commit conventions |
 
 ## Core Reference

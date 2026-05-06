@@ -98,7 +98,86 @@ robot pid 900.0 35.0 50.0 1000.0 1500  # 全部参数
 
 ---
 
-### 1.4 robot motion — 运动命令
+### 1.4 robot param — 读取/设置 LQR 平衡参数（实时调参）
+
+```text
+robot param                          # 显示所有当前参数
+robot param list                     # 列出可调参数名
+robot param <name> <value>           # 设置单个参数（立即生效，断电丢失）
+robot param save                     # 保存到 Flash（永久，断电保留）
+robot param reset                    # 恢复代码默认值，清除 Flash 存储
+```
+
+**可调参数列表**：
+
+| 参数名 | 说明 | 当前值 |
+|--------|------|--------|
+| `theta_eq` | 平衡参考角 (rad)，前倾为正 | 0.314159 (18°) |
+| `k_pitch` | 固定 K_pitch，姿态 P | -11.75 |
+| `k_pitch_rate` | 固定 K_pitch_rate，姿态阻尼 | -4.40 |
+| `k_position` | 固定 K_position，位置回正 | 0.90 |
+| `k_velocity` | 固定 K_velocity，速度阻尼 | 1.05 |
+| `k_yaw_rate` | 偏航角速率增益 | 0.0 |
+| `stiction_ma` | Stiction 补偿电流 (mA) | 1900 |
+| `stiction_start` | Stiction 起始角度 (deg) | 0.18 |
+| `stiction_full` | Stiction 满幅角度 (deg) | 2.40 |
+| `current_limit` | 轮子电流上限 (mA) | 3000 |
+| `current_scale` | 电流缩放系数 | 1.45 |
+| `sync_gain` | 轮子同步增益 (mA/(rad/s)) | 0 |
+| `sync_limit` | 轮子同步电流上限 (mA) | 500 |
+
+**示例**：
+
+```text
+# 查看所有参数
+robot param
+
+# 查看可调参数列表
+robot param list
+
+# 调整平衡参考角（例如设置为前倾 18°）
+robot param theta_eq 0.314159
+
+# 增大 pitch 增益（更激进）
+robot param k_pitch -13.0
+
+# 增大位置回复力（防漂移）
+robot param k_position 1.10
+
+# 提高速度阻尼
+robot param k_velocity 1.20
+
+# 禁用 stiction 补偿
+robot param stiction_ma 0
+
+# 调整后立即生效，无需重启
+
+# 满意后永久保存（断电不丢失）
+robot param save
+
+# 不满意？恢复默认值
+robot param reset
+```
+
+**调参建议**（机器人无法保持平衡时）：
+
+1. 先用 `robot param` 查看当前参数
+2. 调 `theta_eq`：扶住机器人找到自然平衡点，让 `err≈0`
+3. 调 `k_pitch`：振荡→减小绝对值；倒下→增大绝对值
+4. 调 `k_position` / `k_velocity`：漂移→增大
+5. `current_limit` 当前保持 `3000 mA`，不要继续加
+6. 调 `stiction_ma`：小角度不响应→增大；振荡→减小或设 0
+7. 调好后 `robot param save` 永久保存
+
+**持久化**：
+- `robot param <name> <value>` — 立即生效，断电丢失
+- `robot param save` — 保存到 Flash，断电保留，下次开机自动加载
+- `robot param reset` — 恢复代码默认值，清除 Flash 存储
+- Flash 存储在 STM32F407 最后 128KB 扇区（NVS），不会覆盖固件
+
+---
+
+### 1.5 robot motion — 运动命令
 
 ```text
 robot motion <forward|back|left|right|jump|stop>
@@ -113,7 +192,7 @@ robot stop            # 等价于 robot motion stop
 
 ---
 
-### 1.5 robot zero — 设置平衡零点
+### 1.6 robot zero — 设置平衡零点
 
 ```text
 robot zero <deg>      # 手动设置零点角度
@@ -128,7 +207,7 @@ robot zero now        # 当前姿态设为零点
 
 ---
 
-### 1.6 robot height — 设置目标高度
+### 1.7 robot height — 设置目标高度
 
 ```text
 robot height <32..80>
@@ -136,7 +215,7 @@ robot height <32..80>
 
 ---
 
-### 1.7 robot joy — 摇杆输入
+### 1.8 robot joy — 摇杆输入
 
 ```text
 robot joy <x:-100..100> <y:-100..100>
@@ -144,7 +223,7 @@ robot joy <x:-100..100> <y:-100..100>
 
 ---
 
-### 1.8 robot jump — 触发跳跃
+### 1.9 robot jump — 触发跳跃
 
 ```text
 robot jump

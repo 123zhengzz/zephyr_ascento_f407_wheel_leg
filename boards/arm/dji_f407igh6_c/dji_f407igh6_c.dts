@@ -179,3 +179,17 @@
 	st,adc-prescaler = <2>;
 	status = "okay";
 };
+
+/* Last 128 KB sector for NVS parameter storage. */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		storage_partition: partition@e0000 {
+			label = "storage";
+			reg = <0x0e0000 0x20000>;
+		};
+	};
+};

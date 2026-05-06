@@ -30,14 +30,7 @@ static struct {
 
 static int64_t deadline_from_duration(int32_t duration_ms)
 {
-	if (duration_ms <= 0) {
-		duration_ms = APP_MOTOR_DEBUG_DEFAULT_TIMEOUT_MS;
-	}
-	if (duration_ms > APP_MOTOR_DEBUG_MAX_TIMEOUT_MS) {
-		duration_ms = APP_MOTOR_DEBUG_MAX_TIMEOUT_MS;
-	}
-
-	return k_uptime_get() + duration_ms;
+	return duration_ms > 0 ? k_uptime_get() + duration_ms : INT64_MAX;
 }
 
 static bool valid_wheel_id(uint8_t id)
@@ -66,15 +59,6 @@ static float clamp_joint_position(uint8_t id, float position_rad)
 
 static void clear_expired_locked(int64_t now_ms)
 {
-	if (ctx.state.wheel_active && now_ms > ctx.state.wheel_deadline_ms) {
-		ctx.state.wheel_active = false;
-		ctx.state.wheel_mode = MOTOR_DEBUG_WHEEL_NONE;
-		memset(ctx.state.wheel_current, 0,
-		       sizeof(ctx.state.wheel_current));
-		ctx.state.left_wheel_rpm = 0;
-		ctx.state.right_wheel_rpm = 0;
-	}
-
 	for (uint8_t id = 1; id <= DM4340_MAX_ID; id++) {
 		if (ctx.state.dm[id].mode != MOTOR_DEBUG_DM_NONE &&
 		    now_ms > ctx.state.dm_deadline_ms[id]) {
@@ -98,9 +82,6 @@ int motor_debug_set_wheel_current(uint8_t id, int32_t current,
 		return -EINVAL;
 	}
 
-	current = app_clamp_i16(current, -APP_M3508_DEBUG_CURRENT_LIMIT,
-				APP_M3508_DEBUG_CURRENT_LIMIT);
-
 	k_spinlock_key_t key = k_spin_lock(&ctx.lock);
 	memset(ctx.state.wheel_current, 0, sizeof(ctx.state.wheel_current));
 	ctx.state.left_wheel_rpm = 0;
@@ -117,13 +98,6 @@ int motor_debug_set_wheel_current(uint8_t id, int32_t current,
 int motor_debug_set_wheel_pair(int32_t left_current, int32_t right_current,
 			       int32_t duration_ms)
 {
-	left_current = app_clamp_i16(left_current,
-				     -APP_M3508_DEBUG_CURRENT_LIMIT,
-				     APP_M3508_DEBUG_CURRENT_LIMIT);
-	right_current = app_clamp_i16(right_current,
-				      -APP_M3508_DEBUG_CURRENT_LIMIT,
-				      APP_M3508_DEBUG_CURRENT_LIMIT);
-
 	k_spinlock_key_t key = k_spin_lock(&ctx.lock);
 	memset(ctx.state.wheel_current, 0, sizeof(ctx.state.wheel_current));
 	ctx.state.left_wheel_rpm = 0;
@@ -143,9 +117,6 @@ int motor_debug_set_wheel_rpm(uint8_t id, int32_t rpm, int32_t duration_ms)
 	if (id != APP_WHEEL_LEFT_ID && id != APP_WHEEL_RIGHT_ID) {
 		return -EINVAL;
 	}
-
-	rpm = CLAMP(rpm, -APP_VESC_DEBUG_ERPM_LIMIT,
-		    APP_VESC_DEBUG_ERPM_LIMIT);
 
 	k_spinlock_key_t key = k_spin_lock(&ctx.lock);
 	memset(ctx.state.wheel_current, 0, sizeof(ctx.state.wheel_current));

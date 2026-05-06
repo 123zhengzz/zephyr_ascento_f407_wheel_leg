@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#define APP_CONTROL_HZ 1000
+#define APP_CONTROL_HZ 200
 #define APP_CAN_BITRATE 1000000U
 
 /*
@@ -30,11 +30,9 @@
  * - raw_vesc_current = logical_forward_current * APP_WHEEL_*_FORWARD_CURRENT_SIGN
  * - logical_forward_speed = raw_vesc_speed * APP_WHEEL_*_FORWARD_CURRENT_SIGN
  *
- * Re-measured 2026-05-05 (BMI088 axis fix applied, bench test):
- *   forward tilt → model outputs positive current, but both wheels went
- *   backward → both signs were flipped.  Corrected:
- *   +VESC current makes the left wheel rotate backward,
- *   +VESC current makes the right wheel rotate forward.
+ * Field-tuned 2026-05-05:
+ * CAN ID 100 is mounted/wired opposite to ID 101, so its logical forward
+ * current uses the opposite raw VESC-current sign.
  */
 #define APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN -1
 #define APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN 1
@@ -51,7 +49,7 @@
 #define APP_DM_RIGHT_FEEDBACK_ID 0x12
 #define APP_DM_MASTER_ID APP_DM_LEFT_FEEDBACK_ID
 
-#define APP_WHEEL_CURRENT_LIMIT 1500
+#define APP_WHEEL_CURRENT_LIMIT 3000
 #define APP_WHEEL_CURRENT_SAFE 800
 
 /*
@@ -61,7 +59,7 @@
  * BENCH TEST: 3.0f–5.0f to overcome VESC minimum current threshold (~0.5–1 A)
  * so small tilts produce visible wheel movement.
  */
-#define APP_ASCENTO_WHEEL_CURRENT_SCALE 1.0f  /* ground contact */
+#define APP_ASCENTO_WHEEL_CURRENT_SCALE 1.45f  /* stronger fall recovery */
 #define APP_M3508_REDUCTION_RATIO 19.203208f
 #define APP_M3508_MOTOR_KT_NM_PER_A 0.180f
 #define APP_M3508_GEARBOX_EFFICIENCY 1.000f
@@ -85,6 +83,8 @@
 #define APP_MOTOR_DEBUG_DEFAULT_TIMEOUT_MS 1000
 #define APP_MOTOR_DEBUG_MAX_TIMEOUT_MS 5000
 #define APP_M3508_DEBUG_CURRENT_LIMIT APP_WHEEL_CURRENT_SAFE
+#define APP_DM_FEEDBACK_TIMEOUT_MS 100
+#define APP_DM_ERROR_REENABLE_INTERVAL_MS 200
 #define APP_DM_DEBUG_VEL_LIMIT_RAD_S 4.0f
 #define APP_DM_DEBUG_KP_LIMIT 80.0f
 #define APP_DM_DEBUG_KD_LIMIT 2.0f
@@ -92,8 +92,20 @@
 
 #define APP_CMD_TIMEOUT_MS 700
 #define APP_BALANCE_RECOVER_TICKS 200
-#define APP_PITCH_FAULT_DEG 45.0f
-#define APP_PITCH_RECOVER_DEG 15.0f
+#define APP_PITCH_FAULT_DEG 70.0f
+#define APP_PITCH_RECOVER_DEG 10.0f
+
+/*
+ * Hard fall-protection caps for the Ascento model controller.
+ *
+ * Runtime fault_deg remains tunable, but these caps cannot be relaxed by
+ * previously saved flash parameters. Backward fall is intentionally stricter:
+ * once the body is far behind the wheel axle, continuing wheel drive is more
+ * likely to drag the robot than recover it.
+ */
+#define APP_ASCENTO_FORWARD_HARD_FAULT_DEG 70.0f
+#define APP_ASCENTO_BACKWARD_HARD_FAULT_DEG 30.0f
+#define APP_ASCENTO_STAND_RECOVER_ERR_DEG 18.0f
 
 #define APP_DEFAULT_HEIGHT 38
 #define APP_HEIGHT_MIN 32
@@ -130,15 +142,16 @@
 /*
  * DM4340 joint positions at stand leg length (~0.115 m).
  *
- * Interpolated from the 3-point calibration table for 0.115 m:
+ * Interpolated from the 3-point calibration table for 0.115 m, with the
+ * right leg shortened slightly to level the body:
  *   left:  2.28 rad (between short 2.0251 and middle 2.3806)
- *   right: 1.55 rad (between short 1.8324 and middle 1.4353)
+ *   right: 1.58 rad (about 5 mm shorter than the 1.55 rad nominal point)
  *
  * These are used as PID lock positions (power-on default before enable)
  * and as the fallback when the Ascento model is blocked.
  */
 #define APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD 2.28f
-#define APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD 1.55f
+#define APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD 1.58f
 #define APP_PID_BALANCE_JOINT_USE_MIT 1
 #define APP_PID_BALANCE_JOINT_MIT_KP 100.0f  /* 50→100: stiffer joint lock */
 #define APP_PID_BALANCE_JOINT_MIT_KD 12.0f   /* 8→12: more damping */
@@ -172,9 +185,25 @@
  *
  * Set CURRENT to 0 to disable.
  */
-#define APP_ASCENTO_STICTION_CURRENT_MA 2800.0f
-#define APP_ASCENTO_STICTION_START_DEG 0.10f
-#define APP_ASCENTO_STICTION_FULL_DEG 1.50f
+#define APP_ASCENTO_STICTION_CURRENT_MA 0.0f
+#define APP_ASCENTO_STICTION_START_DEG 0.18f
+#define APP_ASCENTO_STICTION_FULL_DEG 2.40f
+
+/*
+ * Wheel speed synchronization compensation.
+ *
+ * When left and right wheels have different speeds (due to motor
+ * parameter mismatch, friction differences, or wheel diameter
+ * variation), this adds a differential current to equalize them.
+ *
+ * sync_gain: proportional gain (mA per rad/s of speed error)
+ *   Higher = stronger sync, but may cause oscillation.
+ *   Start with 50-100, increase until wheels match.
+ *
+ * Set to 0 to disable synchronization.
+ */
+#define APP_ASCENTO_WHEEL_SYNC_GAIN_MA 0.0f
+#define APP_ASCENTO_WHEEL_SYNC_CURRENT_LIMIT 500.0f
 
 #define APP_PID_BALANCE_JOY_LPF_TIME_S 0.20f
 #define APP_PID_BALANCE_JOY_TO_SPEED_RAD_S 0.100f
@@ -224,7 +253,7 @@
 #define APP_ASCENTO_SINGLE_LEG_MASS_KG 0.1108f
 
 #define APP_ASCENTO_BODY_COM_HEIGHT_M 0.098f
-#define APP_ASCENTO_BODY_COM_FORWARD_OFFSET_M (-0.040f)
+#define APP_ASCENTO_BODY_COM_FORWARD_OFFSET_M (-0.0245f)
 #define APP_ASCENTO_BODY_PITCH_INERTIA_KG_M2 0.060f
 
 /*
@@ -346,55 +375,42 @@
 #define APP_ASCENTO_RIGHT_JOINT_AT_MAX_LEG_RAD 1.00f   /* 0.9676 + 0.03, unchanged */
 
 /*
- * LQR gain scheduling — polynomial fits from full leg-length sweep.
+ * Fixed balance gains used by the active controller.
  *
- * Gains are quadratic functions of leg length L (metres):
- *   K_pitch(L)   = C0_A·L² + C0_B·L + C0_C
- *   K_prate(L)   = C1_A·L² + C1_B·L + C1_C
- *   K_pos         = C2   (constant)
- *   K_vel(L)     = C3_A·L² + C3_B·L + C3_C
- *
- * Fitted 2026-05-04 from 5 anchor LQR solves (0.064–0.203 m) using the
- * four-bar kinematics, Ip=0.060 kg·m², x_com=−0.040 m.  All anchors are
- * closed-loop stable (max pole real part < 0).
- *
- * The flat K_* macros below are the mid-leg (0.135 m) defaults used for
- * param-struct initialisation and as a fallback when leg length is unknown.
- * The runtime controller evaluates the polynomial at the current average
- * leg length and uses those values instead.
+ * The legacy polynomial gain-schedule coefficients below are kept only for
+ * backward compatibility with old flash data. The running controller now uses
+ * the fixed K_* macros directly.
  */
 #define APP_ASCENTO_GAIN_C0_A  -8.0019f
 #define APP_ASCENTO_GAIN_C0_B   2.9106f
-#define APP_ASCENTO_GAIN_C0_C  -5.2007f
+#define APP_ASCENTO_GAIN_C0_C  -12.0000f
 #define APP_ASCENTO_GAIN_C1_A  -19.1727f
 #define APP_ASCENTO_GAIN_C1_B   7.0983f
-#define APP_ASCENTO_GAIN_C1_C  -1.4842f
-#define APP_ASCENTO_GAIN_C2     -0.6325f
+#define APP_ASCENTO_GAIN_C1_C  -5.0000f
+#define APP_ASCENTO_GAIN_C2      0.9000f
 #define APP_ASCENTO_GAIN_C3_A  -6.1109f
 #define APP_ASCENTO_GAIN_C3_B   2.3991f
-#define APP_ASCENTO_GAIN_C3_C  -1.1471f
+#define APP_ASCENTO_GAIN_C3_C   0.8500f
 
 /*
- * Equilibrium pitch angle (rad) at the stand leg length (0.095 m).
+ * Equilibrium pitch angle (rad) at the stand leg length.
  *
- * COM is behind wheel axle (x_com = −0.040 m), so the body must lean FORWARD
- * to bring the COM above the axle: theta_eq ≈ atan(−x_com / h_com)
- * = atan(0.040/0.098) ≈ +0.367 rad (+21°) at L = 0.095 m.
+ * Default tuned stand target: +18 deg forward lean = +0.314159 rad.
  *
  * In model coordinates (IMU-sign-corrected): positive pitch = forward tilt.
  *
  * FOR BENCH TEST:  0.0f        (equilibrium = upright, direction reverses with tilt)
- * FOR GROUND CONTACT: +0.367f  (equilibrium = forward lean matching COM offset)
+ * FOR GROUND CONTACT: +0.314159f  (18 deg forward lean)
  *
  * TODO: make theta_eq a function of leg length L.
  */
-#define APP_ASCENTO_THETA_EQ_STAND_RAD 0.367f  /* ground contact */
+#define APP_ASCENTO_THETA_EQ_STAND_RAD 0.314159f  /* 18 deg, ground contact */
 
-/* Flat-gain defaults at mid leg length (0.135 m) — fallback / struct init. */
-#define APP_ASCENTO_K_PITCH      -4.954f
-#define APP_ASCENTO_K_PITCH_RATE -0.878f
-#define APP_ASCENTO_K_POSITION   -0.632f
-#define APP_ASCENTO_K_VELOCITY   -0.936f
+/* Fixed gain defaults used by the active controller. */
+#define APP_ASCENTO_K_PITCH      -11.75f
+#define APP_ASCENTO_K_PITCH_RATE -4.40f
+#define APP_ASCENTO_K_POSITION    0.90f
+#define APP_ASCENTO_K_VELOCITY    1.05f
 #define APP_ASCENTO_K_YAW_RATE 0.0f
 #define APP_ASCENTO_K_ROLL_TO_LEG_M_PER_RAD 0.0f
 
@@ -421,3 +437,4 @@
 #define APP_ASCENTO_IMU_ROLL_SIGN  (1.0f)
 #define APP_ASCENTO_IMU_GY_SIGN    (1.0f)
 #define APP_ASCENTO_IMU_GZ_SIGN    (1.0f)
+#define APP_IMU_ROLL_ZERO_DEG      2.5f

@@ -8,6 +8,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
+#include "app_config.h"
+
 LOG_MODULE_REGISTER(bmi088, LOG_LEVEL_INF);
 
 #define BMI088_ACCEL_NODE DT_NODELABEL(bmi088_accel)
@@ -170,7 +172,7 @@ static void update_attitude(bmi088_t *imu, bmi088_sample_t *sample)
 		imu->yaw_deg += 360.0f;
 	}
 
-	sample->roll_deg = imu->roll_deg;
+	sample->roll_deg = imu->roll_deg - APP_IMU_ROLL_ZERO_DEG;
 	sample->pitch_deg = imu->pitch_deg;
 	sample->yaw_deg = imu->yaw_deg;
 }

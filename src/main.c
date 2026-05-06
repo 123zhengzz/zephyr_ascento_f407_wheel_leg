@@ -225,7 +225,6 @@ static void control_thread(void *p1, void *p2, void *p3)
 	dji_m3508_motor_t right_motor = { 0 };
 	control_output_t out;
 	int64_t last_us = k_cyc_to_us_floor64(k_cycle_get_64());
-	bool debug_was_active = false;
 
 	while (true) {
 		const int64_t now_us = k_cyc_to_us_floor64(k_cycle_get_64());
@@ -236,64 +235,45 @@ static void control_thread(void *p1, void *p2, void *p3)
 		}
 
 		const int imu_ret = bmi088_update(&imu, &imu_sample);
-		const int64_t now_ms = k_uptime_get();
 		const bool left_present = dji_m3508_get(
 			&dji_bus, APP_WHEEL_LEFT_ID, &left_motor);
 		const bool right_present = dji_m3508_get(
 			&dji_bus, APP_WHEEL_RIGHT_ID, &right_motor);
-		const bool left_ok =
-			left_present &&
-			(now_ms - left_motor.last_update_ms) <=
-				APP_VESC_FEEDBACK_TIMEOUT_MS;
-		const bool right_ok =
-			right_present &&
-			(now_ms - right_motor.last_update_ms) <=
-				APP_VESC_FEEDBACK_TIMEOUT_MS;
 		const bool enable_request = control_get_enable_request();
 
 		if (imu_ret == 0) {
 			last_imu_sample = imu_sample;
-			if (!left_ok) {
+			if (!left_present) {
 				left_motor = (dji_m3508_motor_t){ 0 };
 			}
-			if (!right_ok) {
+			if (!right_present) {
 				right_motor = (dji_m3508_motor_t){ 0 };
 			}
 #if APP_USE_ASCENTO_BALANCE_CONTROLLER
-			dm4340_feedback_t left_jt, right_jt;
-			const bool ljt = dm4340_get(&dm_bus, APP_DM_LEFT_ID,
-						    &left_jt);
-			const bool rjt = dm4340_get(&dm_bus, APP_DM_RIGHT_ID,
-						    &right_jt);
-
-			const ascento_balance_params_t *ap =
-				&ascento_balance_default_params;
+				ascento_balance_params_t ap_copy;
+				ascento_balance_get_params(&ap_copy);
+				const ascento_balance_params_t *ap = &ap_copy;
 
 			const ascento_balance_input_t ai = {
-				.enable_request = enable_request,
-				.wheel_feedback_ok = left_ok && right_ok,
-				.dt_s = dt_s,
-				.target_forward_speed_mps = 0.0f,
-				.target_yaw_rate_rad_s = 0.0f,
-				.target_leg_length_m = APP_ASCENTO_LEG_LENGTH_STAND_M,
-				.target_pitch_rad = 0.0f,
-				.left_joint_position_rad =
-					ljt ? left_jt.position_rad : 0.0f,
-				.right_joint_position_rad =
-					rjt ? right_jt.position_rad : 0.0f,
-				.left_joint_velocity_rad_s =
-					ljt ? left_jt.velocity_rad_s : 0.0f,
-				.right_joint_velocity_rad_s =
-					rjt ? right_jt.velocity_rad_s : 0.0f,
-				.imu = imu_sample,
-				.left_wheel = left_motor,
-				.right_wheel = right_motor,
-			};
+					.enable_request = enable_request,
+					.wheel_feedback_ok = true,
+					.dt_s = dt_s,
+					.target_forward_speed_mps = 0.0f,
+					.target_yaw_rate_rad_s = 0.0f,
+					.target_pitch_rad = 0.0f,
+					.left_joint_position_rad = 0.0f,
+					.right_joint_position_rad = 0.0f,
+					.left_joint_velocity_rad_s = 0.0f,
+					.right_joint_velocity_rad_s = 0.0f,
+					.imu = imu_sample,
+					.left_wheel = left_motor,
+					.right_wheel = right_motor,
+				};
 
-			ascento_balance_output_t ao;
-			ascento_balance_update(&ascento_state, ap, &ai, &ao);
+				ascento_balance_output_t ao;
+				ascento_balance_update(&ascento_state, ap, &ai, &ao);
 
-			if (ao.active) {
+				if (ao.active) {
 				out.wheels_enabled = true;
 				out.joints_enabled = true;
 				out.left_wheel_current =
@@ -322,19 +302,6 @@ static void control_thread(void *p1, void *p2, void *p3)
 			control_step(&imu_sample, &left_motor, &right_motor,
 				     dt_s, &out);
 #endif
-			/* Wheels only active when enabled (safety).
-			 * Joints always hold their lock position so the legs
-			 * don't collapse to mechanical minimum at startup. */
-			if (!enable_request) {
-				out.wheels_enabled = false;
-				out.left_wheel_current = 0;
-				out.right_wheel_current = 0;
-			}
-			if (!left_ok || !right_ok) {
-				out.wheels_enabled = false;
-				out.left_wheel_current = 0;
-				out.right_wheel_current = 0;
-			}
 #if APP_USE_ASCENTO_BALANCE_CONTROLLER
 			control_publish_status(&(control_status_t) {
 				.enable_request = enable_request,
@@ -344,8 +311,10 @@ static void control_thread(void *p1, void *p2, void *p3)
 				.joy_x = 0.0f,
 				.joy_y = 0.0f,
 				.motion = ROBOT_STOP,
-				.pitch_deg = imu_sample.pitch_deg,
-				.roll_deg = imu_sample.roll_deg,
+				.pitch_deg = APP_ASCENTO_IMU_PITCH_SIGN *
+					     imu_sample.pitch_deg,
+				.roll_deg = APP_ASCENTO_IMU_ROLL_SIGN *
+					    imu_sample.roll_deg,
 				.yaw_deg = imu_sample.yaw_deg,
 				.distance_rad = ao.body_position_m,
 				.speed_rad_s = ao.body_velocity_mps,
@@ -377,28 +346,15 @@ static void control_thread(void *p1, void *p2, void *p3)
 
 		motor_debug_output_t debug;
 		if (motor_debug_get_output(&debug)) {
-				debug_was_active = true;
 				send_debug_output(&debug);
+				send_control_joints(&out);
 				(void)dm4340_poll_rx_fifo(&dm_bus);
 				k_sleep(K_USEC(1000000U / APP_CONTROL_HZ));
 				continue;
 			}
 
-		if (debug_was_active) {
-			(void)dji_m3508_send_group_current(&dji_bus, 0, 0, 0,
-							   0);
-			/* Re-enable DM motors — they may have timed out during
-			 * debug mode where no MIT commands were sent. */
-			(void)dm4340_enable(&dm_bus, APP_DM_LEFT_ID);
-			(void)dm4340_enable(&dm_bus, APP_DM_RIGHT_ID);
-			debug_was_active = false;
-		}
-
-		if (out.wheels_enabled && left_ok && right_ok) {
+		if (out.wheels_enabled) {
 			(void)send_control_wheel_current(&out);
-		} else {
-			(void)dji_m3508_send_group_current(&dji_bus, 0, 0, 0,
-							   0);
 		}
 
 		if (out.joints_enabled) {
@@ -419,6 +375,7 @@ int main(void)
 	control_init();
 #if APP_USE_ASCENTO_BALANCE_CONTROLLER
 	ascento_balance_init(&ascento_state);
+	ascento_balance_settings_init();
 #endif
 
 	if (prepare_can(joint_can, "CAN joint DM43xx") != 0) {
@@ -472,9 +429,9 @@ int main(void)
 		if (battery.valid) {
 			LOG_INF("pitch %.2f roll %.2f yaw %.1f gy %.1f gz %.1f current %d/%d "
 				"height %d batt %.2f V",
-				(double)last_imu_sample.pitch_deg,
-				(double)last_imu_sample.roll_deg,
-				(double)last_imu_sample.yaw_deg,
+				(double)status.pitch_deg,
+				(double)status.roll_deg,
+				(double)status.yaw_deg,
 				(double)last_imu_sample.gy_dps,
 				(double)last_imu_sample.gz_dps,
 				status.left_wheel_current,
@@ -483,9 +440,9 @@ int main(void)
 		} else {
 			LOG_INF("pitch %.2f roll %.2f yaw %.1f gy %.1f gz %.1f current %d/%d "
 				"height %d",
-				(double)last_imu_sample.pitch_deg,
-				(double)last_imu_sample.roll_deg,
-				(double)last_imu_sample.yaw_deg,
+				(double)status.pitch_deg,
+				(double)status.roll_deg,
+				(double)status.yaw_deg,
 				(double)last_imu_sample.gy_dps,
 				(double)last_imu_sample.gz_dps,
 				status.left_wheel_current,

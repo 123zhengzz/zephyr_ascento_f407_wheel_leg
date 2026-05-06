@@ -31,6 +31,22 @@ typedef struct {
 	float k_velocity;
 	float k_yaw_rate;
 	float k_roll_to_leg_m_per_rad;
+
+	/* Runtime-tunable overrides (initialized from #define defaults). */
+	float theta_eq_rad;
+	float gain_c0_a, gain_c0_b, gain_c0_c;  /* legacy / flash compatibility */
+	float gain_c1_a, gain_c1_b, gain_c1_c;  /* legacy / flash compatibility */
+	float gain_c2;                           /* legacy / flash compatibility */
+	float gain_c3_a, gain_c3_b, gain_c3_c;  /* legacy / flash compatibility */
+	float stiction_current_ma;
+	float stiction_start_deg;
+	float stiction_full_deg;
+	int16_t current_limit_ma;
+	float current_scale;
+	float fault_deg;
+	float recover_deg;
+	float wheel_sync_gain_ma;
+	float wheel_sync_current_limit_ma;
 } ascento_balance_params_t;
 
 typedef struct {
@@ -39,7 +55,6 @@ typedef struct {
 	float dt_s;
 	float target_forward_speed_mps;
 	float target_yaw_rate_rad_s;
-	float target_leg_length_m;
 	float target_pitch_rad;
 	float left_joint_position_rad;
 	float right_joint_position_rad;
@@ -65,8 +80,6 @@ typedef struct {
 	float pitch_rate_rad_s;
 	float balance_torque_nm;
 	float yaw_torque_nm;
-	float left_leg_length_m;
-	float right_leg_length_m;
 } ascento_balance_output_t;
 
 typedef struct {
@@ -74,21 +87,25 @@ typedef struct {
 	bool faulted;
 	int recover_ticks;
 	float body_position_m;
+	float wheel_position_zero_m;
 	float body_velocity_lpf_mps;
 	float yaw_rate_lpf_rad_s;
-	float left_leg_length_m;
-	float right_leg_length_m;
 } ascento_balance_state_t;
 
-extern const ascento_balance_params_t ascento_balance_default_params;
+extern const ascento_balance_params_t *ascento_balance_default_params;
+
+void ascento_balance_get_params(ascento_balance_params_t *params);
+void ascento_balance_set_params(const ascento_balance_params_t *params);
+
+int ascento_balance_save_params(void);
+int ascento_balance_reset_params(void);
+int ascento_balance_settings_init(void);
 
 void ascento_balance_init(ascento_balance_state_t *state);
 void ascento_balance_reset(ascento_balance_state_t *state);
 bool ascento_balance_params_ready(const ascento_balance_params_t *params);
 float ascento_balance_leg_length_from_joint(const ascento_balance_params_t *params,
 					    bool left_leg, float joint_rad);
-float ascento_balance_joint_from_leg_length(const ascento_balance_params_t *params,
-					    bool left_leg, float leg_length_m);
 void ascento_balance_update(ascento_balance_state_t *state,
 			    const ascento_balance_params_t *params,
 			    const ascento_balance_input_t *input,

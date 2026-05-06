@@ -3,6 +3,7 @@
 #include <math.h>
 #include <string.h>
 
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
 #include "app_config.h"
@@ -12,7 +13,7 @@ LOG_MODULE_REGISTER(ascento, LOG_LEVEL_INF);
 
 #define DEG_TO_RAD 0.017453292519943295f
 
-const ascento_balance_params_t ascento_balance_default_params = {
+static const ascento_balance_params_t ascento_balance_code_defaults = {
 	.calibrated = APP_ASCENTO_PARAMS_CALIBRATED != 0,
 	.wheel_radius_m = APP_ASCENTO_WHEEL_RADIUS_M,
 	.wheel_base_m = APP_ASCENTO_WHEEL_BASE_M,
@@ -40,7 +41,221 @@ const ascento_balance_params_t ascento_balance_default_params = {
 	.k_velocity = APP_ASCENTO_K_VELOCITY,
 	.k_yaw_rate = APP_ASCENTO_K_YAW_RATE,
 	.k_roll_to_leg_m_per_rad = APP_ASCENTO_K_ROLL_TO_LEG_M_PER_RAD,
+
+	/* Runtime-tunable fields. */
+	.theta_eq_rad = APP_ASCENTO_THETA_EQ_STAND_RAD,
+	.gain_c0_a = APP_ASCENTO_GAIN_C0_A,
+	.gain_c0_b = APP_ASCENTO_GAIN_C0_B,
+	.gain_c0_c = APP_ASCENTO_GAIN_C0_C,
+	.gain_c1_a = APP_ASCENTO_GAIN_C1_A,
+	.gain_c1_b = APP_ASCENTO_GAIN_C1_B,
+	.gain_c1_c = APP_ASCENTO_GAIN_C1_C,
+	.gain_c2   = APP_ASCENTO_GAIN_C2,
+	.gain_c3_a = APP_ASCENTO_GAIN_C3_A,
+	.gain_c3_b = APP_ASCENTO_GAIN_C3_B,
+	.gain_c3_c = APP_ASCENTO_GAIN_C3_C,
+	.stiction_current_ma = APP_ASCENTO_STICTION_CURRENT_MA,
+	.stiction_start_deg  = APP_ASCENTO_STICTION_START_DEG,
+	.stiction_full_deg   = APP_ASCENTO_STICTION_FULL_DEG,
+	.current_limit_ma    = APP_WHEEL_CURRENT_LIMIT,
+	.current_scale       = APP_ASCENTO_WHEEL_CURRENT_SCALE,
+	.fault_deg           = APP_PITCH_FAULT_DEG,
+	.recover_deg         = APP_PITCH_RECOVER_DEG,
+	.wheel_sync_gain_ma  = APP_ASCENTO_WHEEL_SYNC_GAIN_MA,
+	.wheel_sync_current_limit_ma = APP_ASCENTO_WHEEL_SYNC_CURRENT_LIMIT,
 };
+
+K_MUTEX_DEFINE(params_lock);
+
+static ascento_balance_params_t ascento_balance_runtime_params;
+static bool ascento_balance_params_initialized;
+
+/* Backward-compat alias for code that still reads the old name. */
+const ascento_balance_params_t *ascento_balance_default_params =
+	&ascento_balance_code_defaults;
+
+static void ascento_balance_params_init_once(void)
+{
+	k_mutex_lock(&params_lock, K_FOREVER);
+	if (!ascento_balance_params_initialized) {
+		ascento_balance_runtime_params = ascento_balance_code_defaults;
+		ascento_balance_params_initialized = true;
+	}
+	k_mutex_unlock(&params_lock);
+}
+
+void ascento_balance_get_params(ascento_balance_params_t *params)
+{
+	ascento_balance_params_init_once();
+	k_mutex_lock(&params_lock, K_FOREVER);
+	*params = ascento_balance_runtime_params;
+	k_mutex_unlock(&params_lock);
+}
+
+void ascento_balance_set_params(const ascento_balance_params_t *params)
+{
+	ascento_balance_params_init_once();
+	k_mutex_lock(&params_lock, K_FOREVER);
+	ascento_balance_runtime_params = *params;
+	ascento_balance_params_initialized = true;
+	k_mutex_unlock(&params_lock);
+}
+
+/* --- Persistent storage via direct flash read/write --- */
+/*
+ * NVS cannot be used because STM32F407 128KB flash sectors exceed the
+ * uint16_t sector_size field in nvs_fs (max 65535).  Instead we erase
+ * the whole partition and write a simple header+payload+CRC blob.
+ */
+#include <zephyr/storage/flash_map.h>
+#include <zephyr/sys/crc.h>
+
+#define PARAMS_FLASH_LABEL  storage_partition
+#define PARAMS_MAGIC        0x41534350  /* "ASC P" */
+#define PARAMS_VERSION      14
+
+struct params_flash_header {
+	uint32_t magic;
+	uint32_t version;
+	uint32_t data_size;
+};
+
+int ascento_balance_save_params(void)
+{
+	ascento_balance_params_init_once();
+
+	const struct flash_area *fa;
+	int rc = flash_area_open(FIXED_PARTITION_ID(PARAMS_FLASH_LABEL), &fa);
+	if (rc) {
+		printk("ascento: flash_area_open failed: %d\n", rc);
+		return rc;
+	}
+
+	struct params_flash_header hdr = {
+		.magic = PARAMS_MAGIC,
+		.version = PARAMS_VERSION,
+		.data_size = sizeof(ascento_balance_params_t),
+	};
+
+	uint8_t buf[sizeof(hdr) + sizeof(ascento_balance_params_t) + 4];
+	memcpy(buf, &hdr, sizeof(hdr));
+
+	k_mutex_lock(&params_lock, K_FOREVER);
+	memcpy(buf + sizeof(hdr), &ascento_balance_runtime_params,
+	       sizeof(ascento_balance_params_t));
+	k_mutex_unlock(&params_lock);
+
+	uint32_t crc = crc32_ieee(buf, sizeof(hdr) + hdr.data_size);
+	memcpy(buf + sizeof(hdr) + hdr.data_size, &crc, sizeof(crc));
+
+	const size_t total = sizeof(hdr) + hdr.data_size + sizeof(crc);
+
+	rc = flash_area_erase(fa, 0, fa->fa_size);
+	if (rc) {
+		printk("ascento: flash erase failed: %d\n", rc);
+		flash_area_close(fa);
+		return rc;
+	}
+
+	rc = flash_area_write(fa, 0, buf, total);
+	flash_area_close(fa);
+
+	if (rc) {
+		printk("ascento: flash write failed: %d\n", rc);
+	} else {
+		printk("ascento: params saved to flash (%u bytes)\n",
+		       (unsigned)total);
+	}
+	return rc;
+}
+
+int ascento_balance_reset_params(void)
+{
+	k_mutex_lock(&params_lock, K_FOREVER);
+	ascento_balance_runtime_params = ascento_balance_code_defaults;
+	ascento_balance_params_initialized = true;
+	k_mutex_unlock(&params_lock);
+
+	const struct flash_area *fa;
+	int rc = flash_area_open(FIXED_PARTITION_ID(PARAMS_FLASH_LABEL), &fa);
+	if (rc) {
+		return rc;
+	}
+	rc = flash_area_erase(fa, 0, fa->fa_size);
+	flash_area_close(fa);
+
+	if (rc == 0) {
+		printk("ascento: params reset to defaults, flash cleared\n");
+	} else {
+		printk("ascento: flash erase failed: %d (params reset in RAM)\n",
+		       rc);
+	}
+	return rc;
+}
+
+int ascento_balance_settings_init(void)
+{
+	ascento_balance_params_init_once();
+
+	const struct flash_area *fa;
+	int rc = flash_area_open(FIXED_PARTITION_ID(PARAMS_FLASH_LABEL), &fa);
+	if (rc) {
+		printk("ascento: flash_area_open failed: %d\n", rc);
+		return rc;
+	}
+
+	struct params_flash_header hdr;
+	rc = flash_area_read(fa, 0, &hdr, sizeof(hdr));
+	if (rc) {
+		printk("ascento: flash read header failed: %d\n", rc);
+		flash_area_close(fa);
+		return rc;
+	}
+
+	if (hdr.magic != PARAMS_MAGIC || hdr.version != PARAMS_VERSION) {
+		printk("ascento: no saved params (magic=0x%08x ver=%u)\n",
+		       hdr.magic, hdr.version);
+		flash_area_close(fa);
+		return 0;  /* not an error — just use defaults */
+	}
+
+	if (hdr.data_size != sizeof(ascento_balance_params_t)) {
+		printk("ascento: params size mismatch: got %u want %u\n",
+		       (unsigned)hdr.data_size,
+		       (unsigned)sizeof(ascento_balance_params_t));
+		flash_area_close(fa);
+		return -EINVAL;
+	}
+
+	uint8_t buf[sizeof(hdr) + sizeof(ascento_balance_params_t) + 4];
+	const size_t total = sizeof(hdr) + hdr.data_size + sizeof(uint32_t);
+	rc = flash_area_read(fa, 0, buf, total);
+	flash_area_close(fa);
+	if (rc) {
+		printk("ascento: flash read data failed: %d\n", rc);
+		return rc;
+	}
+
+	uint32_t stored_crc;
+	memcpy(&stored_crc, buf + sizeof(hdr) + hdr.data_size, sizeof(stored_crc));
+	uint32_t calc_crc = crc32_ieee(buf, sizeof(hdr) + hdr.data_size);
+	if (stored_crc != calc_crc) {
+		printk("ascento: CRC mismatch (stored=0x%08x calc=0x%08x)\n",
+		       stored_crc, calc_crc);
+		return -EIO;
+	}
+
+	ascento_balance_params_t tmp;
+	memcpy(&tmp, buf + sizeof(hdr), sizeof(tmp));
+
+	k_mutex_lock(&params_lock, K_FOREVER);
+	ascento_balance_runtime_params = tmp;
+	ascento_balance_params_initialized = true;
+	k_mutex_unlock(&params_lock);
+
+	printk("ascento: loaded params from flash OK\n");
+	return 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* Four-bar linkage geometry (ACTIVE — user-confirmed link lengths)     */
@@ -207,64 +422,6 @@ static bool fb_leg_length_from_joint(float joint_rad, int8_t side,
 	return true;
 }
 
-/* leg_length → joint_angle (inverse, via coarse scan + bisection)
- *
- * Starting the bisection at qC = 0 is unreliable because the four-bar
- * cannot close near qC = 0 for this geometry (circles don't intersect).
- * Instead we do a coarse scan to find a valid bracket, then bisect. */
-static bool fb_joint_from_leg_length(float leg_length_m, int8_t side,
-				     float *joint_rad)
-{
-	float offset = (side >= 0) ? FB_OFF_RIGHT : FB_OFF_LEFT;
-	float target = leg_length_m + FB_DL;
-	fb_state_t st;
-	bool found = false;
-	float best_qC = 0.0f, best_err = 1e9f;
-
-	/* Coarse scan over the full qC range to find valid bracket.
-	 * fb_forward fails where the linkage can't close; we skip those. */
-	float lo = 0.0f, hi = 0.0f;
-	bool lo_set = false, hi_set = false;
-
-	for (int i = 0; i <= 32; i++) {
-		float qC = -3.1416f + (float)i * (6.2832f / 32.0f);
-		if (!fb_forward(qC, side, &st)) continue;
-		float e = st.leg_length - target;
-		if (fabsf(e) < best_err) {
-			best_err = fabsf(e);
-			best_qC = qC;
-			found = true;
-		}
-		if (e > 0.0f) {
-			if (!hi_set || qC < hi) hi = qC;
-			hi_set = true;
-		} else {
-			if (!lo_set || qC > lo) lo = qC;
-			lo_set = true;
-		}
-	}
-
-	/* Refine with bisection if we have a bracket */
-	if (lo_set && hi_set) {
-		if (lo > hi) { float t = lo; lo = hi; hi = t; }
-		for (int iter = 0; iter < 20; iter++) {
-			float mid = 0.5f * (lo + hi);
-			if (!fb_forward(mid, side, &st)) break;
-			float e = st.leg_length - target;
-			if (fabsf(e) < 1e-5f) {
-				best_qC = mid; found = true; break;
-			}
-			if (fabsf(e) < best_err) {
-				best_err = fabsf(e); best_qC = mid;
-			}
-			if (e > 0.0f) hi = mid; else lo = mid;
-		}
-	}
-
-	if (found) *joint_rad = offset - best_qC;
-	return found;
-}
-
 /* ------------------------------------------------------------------ */
 /* Public mapping functions (four-bar based)                            */
 /* ------------------------------------------------------------------ */
@@ -362,43 +519,15 @@ float ascento_balance_leg_length_from_joint(const ascento_balance_params_t *para
 	return APP_ASCENTO_LEG_LENGTH_MIN_M;
 }
 
-float ascento_balance_joint_from_leg_length(const ascento_balance_params_t *params,
-					    bool left_leg, float leg_length_m)
+/* Return the four fixed balance gains. */
+static void get_fixed_gains(const ascento_balance_params_t *p,
+			    float *k_pitch, float *k_pitch_rate,
+			    float *k_position, float *k_velocity)
 {
-	(void)params;
-	int8_t side = left_leg ? -1 : 1;
-	float joint_rad;
-	if (fb_joint_from_leg_length(leg_length_m, side, &joint_rad)) {
-		return joint_rad;
-	}
-	/* IK failed — return lock position at stand height (safe default). */
-	return left_leg ? APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD
-			: APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD;
-}
-
-static int16_t torque_to_current_ma(float torque_nm,
-				    float current_ma_to_wheel_torque_nm)
-{
-	const float current_ma = torque_nm / current_ma_to_wheel_torque_nm;
-	return app_clamp_i16((int32_t)lrintf(current_ma), -APP_WHEEL_CURRENT_LIMIT,
-			     APP_WHEEL_CURRENT_LIMIT);
-}
-
-/*
- * Evaluate the polynomial gain schedule at the given leg length.
- * Returns the four gains through pointer arguments.
- */
-static void compute_gains(float leg_length_m, float *k_pitch, float *k_pitch_rate,
-			  float *k_position, float *k_velocity)
-{
-	float L = leg_length_m;
-	*k_pitch      = APP_ASCENTO_GAIN_C0_A * L * L +
-			APP_ASCENTO_GAIN_C0_B * L + APP_ASCENTO_GAIN_C0_C;
-	*k_pitch_rate = APP_ASCENTO_GAIN_C1_A * L * L +
-			APP_ASCENTO_GAIN_C1_B * L + APP_ASCENTO_GAIN_C1_C;
-	*k_position   = APP_ASCENTO_GAIN_C2;
-	*k_velocity   = APP_ASCENTO_GAIN_C3_A * L * L +
-			APP_ASCENTO_GAIN_C3_B * L + APP_ASCENTO_GAIN_C3_C;
+	*k_pitch = p->k_pitch;
+	*k_pitch_rate = p->k_pitch_rate;
+	*k_position = p->k_position;
+	*k_velocity = p->k_velocity;
 }
 
 void ascento_balance_update(ascento_balance_state_t *state,
@@ -417,14 +546,11 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	}
 
 	output->params_ready = ascento_balance_params_ready(params);
-	if (!output->params_ready || !input->enable_request ||
-	    !input->wheel_feedback_ok) {
+	if (!output->params_ready) {
 		static uint32_t diag_cnt;
 		if ((diag_cnt++ & 0x3ff) == 0) {
-			LOG_WRN("model blocked: params_ready=%d enable_req=%d "
-				"wheel_fb_ok=%d calib=%d",
-				output->params_ready, input->enable_request,
-				input->wheel_feedback_ok, params->calibrated);
+			LOG_WRN("model blocked: params_ready=%d calib=%d",
+				output->params_ready, params->calibrated);
 		}
 		ascento_balance_reset(state);
 		return;
@@ -456,11 +582,14 @@ void ascento_balance_update(ascento_balance_state_t *state,
 		params->wheel_radius_m;
 
 	if (!state->initialized) {
-		state->body_position_m = wheel_distance_m;
+		state->wheel_position_zero_m = wheel_distance_m;
+		state->body_position_m = 0.0f;
 		state->body_velocity_lpf_mps = body_velocity_mps;
+		state->yaw_rate_lpf_rad_s = input->imu.gz_dps * DEG_TO_RAD;
 		state->initialized = true;
 	} else {
-		state->body_position_m = wheel_distance_m;
+		state->body_position_m =
+			wheel_distance_m - state->wheel_position_zero_m;
 	}
 
 	const float velocity_mps = app_lpf_update(body_velocity_mps,
@@ -474,67 +603,32 @@ void ascento_balance_update(ascento_balance_state_t *state,
 				     app_lpf_update(input->imu.gz_dps * DEG_TO_RAD,
 						    &state->yaw_rate_lpf_rad_s,
 						    0.025f, dt_s);
-	const float roll_rad = APP_ASCENTO_IMU_ROLL_SIGN *
-			       input->imu.roll_deg * DEG_TO_RAD;
-
 	const float x_error = state->body_position_m;
 	const float v_error = velocity_mps - input->target_forward_speed_mps;
 
-	/* Gain scheduling: compute gains from current average leg length. */
-	const float avg_leg_length_m =
-		0.5f * (ascento_balance_leg_length_from_joint(params, true,
-				input->left_joint_position_rad) +
-			ascento_balance_leg_length_from_joint(params, false,
-				input->right_joint_position_rad));
 	float k_pitch, k_pitch_rate, k_position, k_velocity;
-	compute_gains(avg_leg_length_m, &k_pitch, &k_pitch_rate,
-		      &k_position, &k_velocity);
+	get_fixed_gains(params, &k_pitch, &k_pitch_rate, &k_position,
+			&k_velocity);
 
-	/*
-	 * Equilibrium pitch is non-zero because the COM lies behind the
-	 * wheel axle (x_com = −0.040 m).  The robot balances at a forward
-	 * lean.  theta_eq ≈ atan(−x_com / h_com) ≈ +0.367 rad (+21°).
-	 */
-	const float theta_eq = APP_ASCENTO_THETA_EQ_STAND_RAD;
+	const float theta_eq = params->theta_eq_rad;
 	const float pitch_error = pitch_rad - theta_eq - input->target_pitch_rad;
-	const float pitch_error_deg = fabsf(pitch_error) / DEG_TO_RAD;
+	const float pitch_deg = pitch_rad / DEG_TO_RAD;
+	const float abs_pitch_deg = fabsf(pitch_deg);
+	const float runtime_fault_deg =
+		app_clampf(params->fault_deg, 5.0f,
+			   APP_ASCENTO_FORWARD_HARD_FAULT_DEG);
+	const float forward_fault_deg =
+		fminf(runtime_fault_deg, APP_ASCENTO_FORWARD_HARD_FAULT_DEG);
+	const float backward_fault_deg =
+		fminf(runtime_fault_deg, APP_ASCENTO_BACKWARD_HARD_FAULT_DEG);
+	const bool over_forward_limit = pitch_deg > forward_fault_deg;
+	const bool over_backward_limit = pitch_deg < -backward_fault_deg;
 
-	if (pitch_error_deg > APP_PITCH_FAULT_DEG) {
-		state->faulted = true;
-		state->recover_ticks = 0;
-	}
-
-	if (state->faulted) {
-		if (input->enable_request &&
-		    pitch_error_deg < APP_PITCH_RECOVER_DEG) {
-			state->recover_ticks++;
-			if (state->recover_ticks > APP_BALANCE_RECOVER_TICKS) {
-				state->faulted = false;
-				state->recover_ticks = 0;
-				state->body_position_m = wheel_distance_m;
-			}
-		} else {
-			state->recover_ticks = 0;
-		}
-
-		if (state->faulted) {
-			static uint32_t fault_log_cnt;
-			if ((fault_log_cnt++ & 0x3ff) == 0) {
-				LOG_WRN("faulted | pitch=%.2f theta_eq=%.2f "
-					"err_deg=%.1f recover=%d/%d",
-					(double)pitch_rad, (double)theta_eq,
-					(double)pitch_error_deg,
-					state->recover_ticks,
-					APP_BALANCE_RECOVER_TICKS);
-			}
-			output->faulted = true;
-			output->pitch_rad = pitch_rad;
-			output->pitch_rate_rad_s = pitch_rate_rad_s;
-			output->body_position_m = state->body_position_m;
-			output->body_velocity_mps = velocity_mps;
-			return;
-		}
-	}
+	(void)over_forward_limit;
+	(void)over_backward_limit;
+	(void)abs_pitch_deg;
+	(void)forward_fault_deg;
+	(void)backward_fault_deg;
 
 	float balance_torque_nm =
 		-(k_pitch * pitch_error +
@@ -545,88 +639,55 @@ void ascento_balance_update(ascento_balance_state_t *state,
 		-params->k_yaw_rate * (yaw_rate_rad_s -
 				       input->target_yaw_rate_rad_s);
 
-	const float weaker_torque_coeff =
-		fminf(params->left_current_ma_to_wheel_torque_nm,
-		      params->right_current_ma_to_wheel_torque_nm);
-	const float current_limit_torque =
-		weaker_torque_coeff * (float)APP_WHEEL_CURRENT_LIMIT;
-	balance_torque_nm = app_clampf(balance_torque_nm,
-				       -current_limit_torque,
-				       current_limit_torque);
-	yaw_torque_nm = app_clampf(yaw_torque_nm, -current_limit_torque,
-				   current_limit_torque);
-
-	const float target_leg_length =
-		app_clampf(input->target_leg_length_m,
-			   params->leg_length_min_m,
-			   params->leg_length_max_m);
-	const float roll_leg_delta =
-		app_clampf(roll_rad * params->k_roll_to_leg_m_per_rad,
-			   -0.5f * (params->leg_length_max_m -
-				    params->leg_length_min_m),
-			   0.5f * (params->leg_length_max_m -
-				   params->leg_length_min_m));
-	const float left_leg_length =
-		app_clampf(target_leg_length - roll_leg_delta,
-			   params->leg_length_min_m,
-			   params->leg_length_max_m);
-	const float right_leg_length =
-		app_clampf(target_leg_length + roll_leg_delta,
-			   params->leg_length_min_m,
-			   params->leg_length_max_m);
-
 	output->active = true;
-	output->left_wheel_current =
-		(int16_t)((float)torque_to_current_ma(
-				  balance_torque_nm - yaw_torque_nm,
-				  params->left_current_ma_to_wheel_torque_nm) *
-				  APP_ASCENTO_WHEEL_CURRENT_SCALE);
-	output->right_wheel_current =
-		(int16_t)((float)torque_to_current_ma(
-				  balance_torque_nm + yaw_torque_nm,
-				  params->right_current_ma_to_wheel_torque_nm) *
-				  APP_ASCENTO_WHEEL_CURRENT_SCALE);
+	const float left_current_ma =
+		(balance_torque_nm - yaw_torque_nm) /
+		params->left_current_ma_to_wheel_torque_nm *
+		params->current_scale;
+	const float right_current_ma =
+		(balance_torque_nm + yaw_torque_nm) /
+		params->right_current_ma_to_wheel_torque_nm *
+		params->current_scale;
+	output->left_wheel_current = app_clamp_i16(
+		(int32_t)lrintf(left_current_ma), INT16_MIN, INT16_MAX);
+	output->right_wheel_current = app_clamp_i16(
+		(int32_t)lrintf(right_current_ma), INT16_MIN, INT16_MAX);
 
-	/* Stiction: add a bias to overcome VESC minimum-current threshold.
-	 * Ramps from 0 at START_DEG to full at FULL_DEG. */
-	if (APP_ASCENTO_STICTION_CURRENT_MA > 0.0f) {
-		const float st_s = app_clampf(
-			(pitch_error_deg -
-			 APP_ASCENTO_STICTION_START_DEG) /
-				(APP_ASCENTO_STICTION_FULL_DEG -
-				 APP_ASCENTO_STICTION_START_DEG),
-			0.0f, 1.0f);
-		if (st_s > 0.0f) {
-			const int16_t st_ma = (int16_t)lrintf(
-				APP_ASCENTO_STICTION_CURRENT_MA * st_s *
-				APP_ASCENTO_WHEEL_CURRENT_SCALE);
-			const int16_t sign =
-				(balance_torque_nm >= 0.0f) ? 1 : -1;
-			output->left_wheel_current += sign * st_ma;
-			output->right_wheel_current += sign * st_ma;
-		}
+	/* Wheel speed synchronization: compensate for left/right speed mismatch.
+	 *
+	 * If left wheel is faster than right, add current to right and reduce
+	 * from left. This equalizes wheel speeds without affecting the average
+	 * torque used for balancing.
+	 */
+	if (params->wheel_sync_gain_ma > 0.0f) {
+		const float left_speed = wheel_forward_sign(true) *
+			input->left_wheel.speed_rad_s /
+			APP_M3508_REDUCTION_RATIO;
+		const float right_speed = wheel_forward_sign(false) *
+			input->right_wheel.speed_rad_s /
+			APP_M3508_REDUCTION_RATIO;
+		const float speed_error = left_speed - right_speed;
+		const float sync_current = app_clampf(
+			params->wheel_sync_gain_ma * speed_error,
+			-params->wheel_sync_current_limit_ma,
+			params->wheel_sync_current_limit_ma);
+		output->left_wheel_current -= (int16_t)lrintf(sync_current);
+		output->right_wheel_current += (int16_t)lrintf(sync_current);
 	}
 
-	output->left_joint_position_rad =
-		ascento_balance_joint_from_leg_length(params, true,
-						      left_leg_length);
-	output->right_joint_position_rad =
-		ascento_balance_joint_from_leg_length(params, false,
-						      right_leg_length);
+	output->left_joint_position_rad = APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD;
+	output->right_joint_position_rad = APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD;
 
-	/* diagnostic: log ~1 Hz. Lt=target, L=actual, jL/jR=IK joint targets */
+	/* diagnostic: log ~1 Hz. */
 	{
 		static uint32_t diag_active_cnt;
 		if ((diag_active_cnt++ & 0x3ff) == 0) {
 			LOG_INF("active | pitch=%.2f err=%.2f torque=%.2f "
-				"cur=%d/%d Lt=%.3f L=%.3f jL=%.2f jR=%.2f "
-				"K=%.2f/%.2f/%.2f/%.2f",
+				"cur=%d/%d joint=%.2f/%.2f K=%.2f/%.2f/%.2f/%.2f",
 				(double)pitch_rad, (double)pitch_error,
 				(double)balance_torque_nm,
 				output->left_wheel_current,
 				output->right_wheel_current,
-				(double)target_leg_length,
-				(double)avg_leg_length_m,
 				(double)output->left_joint_position_rad,
 				(double)output->right_joint_position_rad,
 				(double)k_pitch, (double)k_pitch_rate,
@@ -640,6 +701,4 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	output->pitch_rate_rad_s = pitch_rate_rad_s;
 	output->balance_torque_nm = balance_torque_nm;
 	output->yaw_torque_nm = yaw_torque_nm;
-	output->left_leg_length_m = left_leg_length;
-	output->right_leg_length_m = right_leg_length;
 }

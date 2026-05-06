@@ -13,6 +13,7 @@
 #include <zephyr/sys/util.h>
 
 #include "app_config.h"
+#include "ascento_balance.h"
 #include "control.h"
 #include "motor_debug.h"
 #include "pid.h"
@@ -342,15 +343,23 @@ static int cmd_robot_status(const struct shell *sh, size_t argc, char **argv)
 	ARG_UNUSED(argv);
 
 	control_status_t st;
+	ascento_balance_params_t params;
+	float pitch_error_deg = 0.0f;
 
 	control_get_status(&st);
+	ascento_balance_get_params(&params);
+	pitch_error_deg =
+		st.pitch_deg - params.theta_eq_rad / 0.017453292519943295f;
+
 	shell_print(sh,
 		    "enable=%d wheels=%d fault=%d height=%d joy=(%.1f,%.1f) "
-		    "pitch=%.2f roll=%.2f yaw=%.2f speed=%.2f lqr=%.1f "
-		    "yaw_out=%.1f current=(%d,%d) joint=(%.3f,%.3f) jump=%d",
+		    "pitch=%.2f err=%.2f roll=%.2f yaw=%.2f speed=%.2f "
+		    "lqr=%.1f yaw_out=%.1f current=(%d,%d) "
+		    "joint=(%.3f,%.3f) jump=%d",
 		    st.enable_request, st.wheels_enabled, st.faulted, st.height,
 		    (double)st.joy_x, (double)st.joy_y,
-		    (double)st.pitch_deg, (double)st.roll_deg,
+		    (double)st.pitch_deg, (double)pitch_error_deg,
+		    (double)st.roll_deg,
 		    (double)st.yaw_deg, (double)st.speed_rad_s,
 		    (double)st.lqr_output, (double)st.yaw_output,
 		    st.left_wheel_current, st.right_wheel_current,
@@ -1200,6 +1209,137 @@ static int cmd_motor_debug_stop(const struct shell *sh, size_t argc,
 	return ret;
 }
 
+/* ------------------------------------------------------------------ */
+/* robot param — runtime balance parameter tuning                     */
+/* ------------------------------------------------------------------ */
+
+static const struct {
+	const char *name;
+	size_t offset;
+	enum { PF_FLOAT, PF_I16 } type;
+	const char *desc;
+	} param_table[] = {
+	{ "theta_eq",        offsetof(ascento_balance_params_t, theta_eq_rad),          PF_FLOAT, "equilibrium pitch (rad)" },
+	{ "k_pitch",        offsetof(ascento_balance_params_t, k_pitch),              PF_FLOAT, "fixed K_pitch" },
+	{ "k_pitch_rate",   offsetof(ascento_balance_params_t, k_pitch_rate),         PF_FLOAT, "fixed K_pitch_rate" },
+	{ "k_position",     offsetof(ascento_balance_params_t, k_position),           PF_FLOAT, "fixed K_position" },
+	{ "k_velocity",     offsetof(ascento_balance_params_t, k_velocity),           PF_FLOAT, "fixed K_velocity" },
+	{ "k_yaw_rate",      offsetof(ascento_balance_params_t, k_yaw_rate),           PF_FLOAT, "yaw rate gain" },
+	{ "stiction_ma",     offsetof(ascento_balance_params_t, stiction_current_ma),  PF_FLOAT, "stiction bias current (mA)" },
+	{ "stiction_start",  offsetof(ascento_balance_params_t, stiction_start_deg),   PF_FLOAT, "stiction ramp start (deg)" },
+	{ "stiction_full",   offsetof(ascento_balance_params_t, stiction_full_deg),    PF_FLOAT, "stiction ramp full (deg)" },
+	{ "current_limit",   offsetof(ascento_balance_params_t, current_limit_ma),     PF_I16,   "wheel current limit (mA)" },
+	{ "current_scale",   offsetof(ascento_balance_params_t, current_scale),        PF_FLOAT, "wheel current scale" },
+	{ "sync_gain",       offsetof(ascento_balance_params_t, wheel_sync_gain_ma),   PF_FLOAT, "wheel sync gain (mA per rad/s)" },
+	{ "sync_limit",      offsetof(ascento_balance_params_t, wheel_sync_current_limit_ma), PF_FLOAT, "wheel sync current limit (mA)" },
+	{ "fault_deg",       offsetof(ascento_balance_params_t, fault_deg),            PF_FLOAT, "pitch fault threshold (deg)" },
+	{ "recover_deg",     offsetof(ascento_balance_params_t, recover_deg),          PF_FLOAT, "pitch recover threshold (deg)" },
+};
+#define PARAM_COUNT ARRAY_SIZE(param_table)
+
+static void print_all_params(const struct shell *sh,
+			     const ascento_balance_params_t *p)
+{
+	shell_print(sh, "theta_eq       = %.4f rad (%.1f deg)",
+		    (double)p->theta_eq_rad,
+		    (double)(p->theta_eq_rad / 0.017453292519943295f));
+	shell_print(sh, "k_pitch        = %.4f", (double)p->k_pitch);
+	shell_print(sh, "k_pitch_rate   = %.4f", (double)p->k_pitch_rate);
+	shell_print(sh, "k_position     = %.4f", (double)p->k_position);
+	shell_print(sh, "k_velocity     = %.4f", (double)p->k_velocity);
+	shell_print(sh, "k_yaw_rate     = %.4f", (double)p->k_yaw_rate);
+	shell_print(sh, "stiction_ma    = %.0f mA", (double)p->stiction_current_ma);
+	shell_print(sh, "stiction_start = %.2f deg", (double)p->stiction_start_deg);
+	shell_print(sh, "stiction_full  = %.2f deg", (double)p->stiction_full_deg);
+	shell_print(sh, "current_limit  = %d mA", p->current_limit_ma);
+	shell_print(sh, "current_scale  = %.2f", (double)p->current_scale);
+	shell_print(sh, "sync_gain      = %.1f mA/(rad/s)", (double)p->wheel_sync_gain_ma);
+	shell_print(sh, "sync_limit     = %.0f mA", (double)p->wheel_sync_current_limit_ma);
+	shell_print(sh, "fault_deg      = %.1f deg (hard +%.1f/-%.1f)",
+		    (double)p->fault_deg,
+		    (double)APP_ASCENTO_FORWARD_HARD_FAULT_DEG,
+		    (double)APP_ASCENTO_BACKWARD_HARD_FAULT_DEG);
+	shell_print(sh, "recover_deg    = %.1f deg (stand err %.1f)",
+		    (double)p->recover_deg,
+		    (double)APP_ASCENTO_STAND_RECOVER_ERR_DEG);
+}
+
+static int cmd_robot_param(const struct shell *sh, size_t argc, char **argv)
+{
+	ascento_balance_params_t params;
+	ascento_balance_get_params(&params);
+
+	/* robot param — show all */
+	if (argc == 1) {
+		print_all_params(sh, &params);
+		return 0;
+	}
+
+	/* robot param list */
+	if (strcmp(argv[1], "list") == 0) {
+		for (size_t i = 0; i < PARAM_COUNT; i++) {
+			shell_print(sh, "  %-16s  %s", param_table[i].name,
+				    param_table[i].desc);
+		}
+		return 0;
+	}
+
+	/* robot param save — persist to flash */
+	if (strcmp(argv[1], "save") == 0) {
+		int rc = ascento_balance_save_params();
+		if (rc == 0) {
+			shell_print(sh, "params saved to flash");
+		} else {
+			shell_error(sh, "save failed: %d", rc);
+		}
+		return rc;
+	}
+
+	/* robot param reset — restore defaults, clear flash */
+	if (strcmp(argv[1], "reset") == 0) {
+		ascento_balance_reset_params();
+		ascento_balance_params_t p;
+		ascento_balance_get_params(&p);
+		shell_print(sh, "params reset to defaults");
+		print_all_params(sh, &p);
+		return 0;
+	}
+
+	/* robot param <name> <value> */
+	if (argc < 3) {
+		shell_error(sh, "usage: robot param <name> <value>");
+		return -EINVAL;
+	}
+
+	for (size_t i = 0; i < PARAM_COUNT; i++) {
+		if (strcmp(argv[1], param_table[i].name) != 0) {
+			continue;
+		}
+
+		float fval;
+		if (!parse_float_arg(argv[2], &fval)) {
+			shell_error(sh, "invalid value: %s", argv[2]);
+			return -EINVAL;
+		}
+
+		uint8_t *base = (uint8_t *)&params;
+		if (param_table[i].type == PF_FLOAT) {
+			*(float *)(base + param_table[i].offset) = fval;
+		} else {
+			*(int16_t *)(base + param_table[i].offset) =
+				(int16_t)fval;
+		}
+
+		ascento_balance_set_params(&params);
+		shell_print(sh, "%s = %s", param_table[i].name, argv[2]);
+		return 0;
+	}
+
+	shell_error(sh, "unknown param: %s (use 'robot param list')",
+		    argv[1]);
+	return -EINVAL;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	robot_cmds,
 	SHELL_CMD_ARG(enable, NULL, "robot enable <0|1|on|off>",
@@ -1219,6 +1359,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(pid, NULL,
 		      "robot pid [angle_p gyro_p [distance_p] [speed_p] [limit_mA]]",
 		      cmd_robot_pid, 1, 5),
+	SHELL_CMD_ARG(param, NULL,
+		      "robot param [list | save | reset | <name> <value>]",
+		      cmd_robot_param, 1, 2),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(robot, &robot_cmds, "wheel-leg robot control", NULL);
