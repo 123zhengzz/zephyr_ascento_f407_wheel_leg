@@ -225,7 +225,7 @@ void ascento_balance_set_params(const ascento_balance_params_t *params)
 /** 魔数 "ASC P"（ASCII: 0x41='A', 0x53='S', 0x43='C', 0x50='P'），用于校验数据有效性 */
 #define PARAMS_MAGIC        0x41534350  /* "ASC P" */
 /** 数据格式版本号，结构体字段变化时递增，防止加载不兼容的数据 */
-#define PARAMS_VERSION      17
+#define PARAMS_VERSION      19
 
 /**
  * Flash 存储头结构体
@@ -882,7 +882,18 @@ float ascento_balance_leg_length_from_joint(const ascento_balance_params_t *para
 }
 
 /**
- * @brief 从参数结构体中提取四个固定的 LQR 平衡增益
+ * @brief Evaluate one quadratic MATLAB gain polynomial.
+ *
+ * MATLAB stores the gain schedule in descending polynomial order:
+ *   gain = a * L^2 + b * L + c
+ */
+static float eval_gain_quad(float a, float b, float c, float leg_length_m)
+{
+	return (a * leg_length_m + b) * leg_length_m + c;
+}
+
+/**
+ * @brief 根据当前腿长计算四个 LQR 平衡增益
  *
  * 这四个增益对应 LQR 状态反馈的四个状态量：
  *   - k_pitch: 俯仰角误差增益 [N*m/rad]
@@ -891,19 +902,27 @@ float ascento_balance_leg_length_from_joint(const ascento_balance_params_t *para
  *   - k_velocity: 速度误差增益 [N*m/(m/s)]
  *
  * @param p           参数结构体
+ * @param leg_length_m 平均腿长 [m]
  * @param k_pitch     输出：俯仰角增益
  * @param k_pitch_rate 输出：俯仰角速率增益
  * @param k_position  输出：位置增益
  * @param k_velocity  输出：速度增益
  */
-static void get_fixed_gains(const ascento_balance_params_t *p,
-			    float *k_pitch, float *k_pitch_rate,
-			    float *k_position, float *k_velocity)
+static void get_scheduled_gains(const ascento_balance_params_t *p,
+				float leg_length_m,
+				float *k_pitch, float *k_pitch_rate,
+				float *k_position, float *k_velocity)
 {
-	*k_pitch = p->k_pitch;
-	*k_pitch_rate = p->k_pitch_rate;
-	*k_position = p->k_position;
-	*k_velocity = p->k_velocity;
+	const float lqr_leg_length_m =
+		app_clampf(leg_length_m, p->leg_length_min_m, p->leg_length_max_m);
+
+	*k_pitch = eval_gain_quad(p->gain_c0_a, p->gain_c0_b,
+				  p->gain_c0_c, lqr_leg_length_m);
+	*k_pitch_rate = eval_gain_quad(p->gain_c1_a, p->gain_c1_b,
+				       p->gain_c1_c, lqr_leg_length_m);
+	*k_position = p->gain_c2;
+	*k_velocity = eval_gain_quad(p->gain_c3_a, p->gain_c3_b,
+				     p->gain_c3_c, lqr_leg_length_m);
 }
 
 /**
@@ -1034,10 +1053,20 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	/* 速度误差 [m/s]：当前速度 - 目标前进速度 */
 	const float v_error = velocity_mps - input->target_forward_speed_mps;
 
-	/* --- 步骤 7：提取 LQR 增益 --- */
+	/* --- 步骤 7：根据平均腿长计算 LQR 增益 --- */
+	const float left_leg_length_m =
+		ascento_balance_leg_length_from_joint(params, true,
+						      input->left_joint_position_rad);
+	const float right_leg_length_m =
+		ascento_balance_leg_length_from_joint(params, false,
+						      input->right_joint_position_rad);
+	const float leg_length_m =
+		app_clampf(0.5f * (left_leg_length_m + right_leg_length_m),
+			   params->leg_length_min_m, params->leg_length_max_m);
+
 	float k_pitch, k_pitch_rate, k_position, k_velocity;
-	get_fixed_gains(params, &k_pitch, &k_pitch_rate, &k_position,
-			&k_velocity);
+	get_scheduled_gains(params, leg_length_m, &k_pitch, &k_pitch_rate,
+			    &k_position, &k_velocity);
 
 	/* --- 步骤 8：计算俯仰角误差 --- */
 	/* theta_eq: 平衡角（静态站立时的俯仰角零点偏移）[弧度] */
@@ -1127,7 +1156,7 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	 *   v_target: 目标前进速度 [m/s]
 	 *
 	 * 负号表示力矩方向与误差方向相反（负反馈）。
-	 * 这是一个简化的 LQR，省略了腿部长度相关的增益调度。
+	 * K_pitch/K_pitch_rate/K_position/K_velocity 由当前平均腿长调度。
 	 */
 	float balance_torque_nm =
 		-(k_pitch * pitch_error +
@@ -1236,7 +1265,8 @@ void ascento_balance_update(ascento_balance_state_t *state,
 		if ((diag_active_cnt++ & mask) == 0) {
 			LOG_INF("pitch=%.2f err=%.2f p_term=%.3f pr_term=%.3f "
 				"pos_term=%.4f vel_term=%.4f torque=%.3f "
-				"v=%.3f theta_eq=%.3f",
+				"v=%.3f L=%.3f theta_eq=%.3f "
+				"K=[%.2f %.2f %.2f %.2f]",
 				(double)pitch_deg,
 				(double)(pitch_error / DEG_TO_RAD),
 				(double)(-k_pitch * pitch_error),
@@ -1245,7 +1275,12 @@ void ascento_balance_update(ascento_balance_state_t *state,
 				(double)(-k_velocity * v_error),
 				(double)balance_torque_nm,
 				(double)velocity_mps,
-				(double)(theta_eq / DEG_TO_RAD));
+				(double)leg_length_m,
+				(double)(theta_eq / DEG_TO_RAD),
+				(double)k_pitch,
+				(double)k_pitch_rate,
+				(double)k_position,
+				(double)k_velocity);
 		}
 	}
 

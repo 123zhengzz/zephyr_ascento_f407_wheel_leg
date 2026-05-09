@@ -208,6 +208,18 @@ static void control_thread(void *p1, void *p2, void *p3)
 			dji_bus, APP_WHEEL_RIGHT_ID, &right_motor);
 		const bool enable_request = control_get_enable_request();
 
+#if APP_USE_ASCENTO_BALANCE_CONTROLLER
+		(void)dm4340_poll_rx_fifo(dm_bus);
+		dm4340_feedback_t left_joint_fb = { 0 };
+		dm4340_feedback_t right_joint_fb = { 0 };
+		const bool left_joint_present =
+			dm4340_get(dm_bus, APP_DM_LEFT_ID, &left_joint_fb);
+		const bool right_joint_present =
+			dm4340_get(dm_bus, APP_DM_RIGHT_ID, &right_joint_fb);
+		const bool joints_present =
+			left_joint_present && right_joint_present;
+#endif
+
 		/* ---- 步骤 3：运行控制算法 ---- */
 		if (imu_ret == 0) {
 			last_imu_sample = imu_sample;
@@ -233,10 +245,20 @@ static void control_thread(void *p1, void *p2, void *p3)
 				.target_forward_speed_mps = 0.0f,
 				.target_yaw_rate_rad_s = 0.0f,
 				.target_pitch_rad = 0.0f,
-				.left_joint_position_rad = 0.0f,
-				.right_joint_position_rad = 0.0f,
-				.left_joint_velocity_rad_s = 0.0f,
-				.right_joint_velocity_rad_s = 0.0f,
+				.left_joint_position_rad =
+					left_joint_present ?
+					left_joint_fb.position_rad :
+					APP_PID_BALANCE_LOCK_LEFT_JOINT_RAD,
+				.right_joint_position_rad =
+					right_joint_present ?
+					right_joint_fb.position_rad :
+					APP_PID_BALANCE_LOCK_RIGHT_JOINT_RAD,
+				.left_joint_velocity_rad_s =
+					left_joint_present ?
+					left_joint_fb.velocity_rad_s : 0.0f,
+				.right_joint_velocity_rad_s =
+					right_joint_present ?
+					right_joint_fb.velocity_rad_s : 0.0f,
 				.imu = imu_sample,
 				.left_wheel = left_motor,
 				.right_wheel = right_motor,
@@ -247,7 +269,7 @@ static void control_thread(void *p1, void *p2, void *p3)
 					       &ao);
 
 			if (ao.active && enable_request && !ao.faulted &&
-			    left_present && right_present) {
+			    left_present && right_present && joints_present) {
 				out.wheels_enabled = true;
 				out.joints_enabled = true;
 				out.left_wheel_current =
