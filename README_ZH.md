@@ -17,22 +17,10 @@ cd /home/h/code_leg/zephyr_ascento_f407_wheel_leg
 
 所有调试命令都在串口 shell 里输入，也就是看到 `uart:~$` 以后再输入，不是在 Linux 终端里输入。
 
-更细的电机接线和参数调试说明见：
+更细的电机接线、参数调试、VESC 协议核对、力矩系数说明和串口终端使用见：
 
 ```text
 docs/MOTOR_DEBUG_README_ZH.md
-```
-
-按 VESC 手册核对代码、编译烧录和 CAN2 轮电机调试指令见：
-
-```text
-docs/VESC_CODE_CHECK_AND_DEBUG_README_ZH.md
-```
-
-VESC 电流反馈、左右轮力矩系数 `torque_k` 和 `torque_est` 入门说明见：
-
-```text
-docs/VESC_TORQUE_COEFFICIENT_BEGINNER_ZH.md
 ```
 
 烧录报错、ST-LINK/OpenOCD/st-flash 排错、RST/NRST 接线说明见：

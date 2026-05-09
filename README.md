@@ -94,7 +94,7 @@ motor dm diag right      # 右关节全寄存器诊断
 
 `motor dm reg` 也扩展支持 FAULT/STATUS/CAN_ERR/MOTOR_ERR 等诊断寄存器。
 
-Motor wiring, smoke-test commands, and Ascento model notes are documented in:
+Motor wiring, smoke-test commands, VESC protocol, torque coefficient, and Ascento model notes are documented in:
 
 - `README_ZH.md`
 - `docs/MOTOR_DEBUG_README_ZH.md`
@@ -119,5 +119,5 @@ Motor wiring, smoke-test commands, and Ascento model notes are documented in:
 ./scripts/serial.sh
 ```
 
-不可用的烧录脚本已禁用，详见 [docs/FLASH_SCRIPT_TEST_REPORT.md](docs/FLASH_SCRIPT_TEST_REPORT.md).
+不可用的烧录脚本已禁用，详见 [docs/FLASH_TROUBLESHOOTING_README_ZH.md](docs/FLASH_TROUBLESHOOTING_README_ZH.md).
 source ./zephyr-env.sh && ./scripts/flash_dap.sh 2>&1

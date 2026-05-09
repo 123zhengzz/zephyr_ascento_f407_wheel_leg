@@ -946,3 +946,132 @@ robot enable 1
 robot jump
 robot motion forward
 ```
+
+## 15. VESC CAN 协议核对
+
+根据 VESC 手册（`docs/2.28修订版说明书.pdf`）的 CAN 通信说明，当前代码已对齐的内容：
+
+| 手册/需求 | 当前工程 |
+| --- | --- |
+| VESC CAN 使用扩展帧 29 bit ID | `src/dji_m3508.c` 中发送和接收都使用 `CAN_FRAME_IDE` |
+| CAN 波特率使用 `1 Mbps` | `src/app_config.h` 中 `APP_CAN_BITRATE 1000000U` |
+| 左轮 VESC ID 为 `101` | `APP_WHEEL_LEFT_ID 101` |
+| 右轮 VESC ID 为 `100` | `APP_WHEEL_RIGHT_ID 100` |
+| Status 1 反馈帧为 `CAN_PACKET_STATUS = 9` | 代码过滤 `(9 << 8) | id` |
+| 右轮 ID100 状态帧为 `0x964` | `motor wheel status right` 接收该帧 |
+| 左轮 ID101 状态帧为 `0x965` | `motor wheel status left` 接收该帧 |
+| 反馈字节 0-3 为 ERPM | 状态打印 `erpm=...` |
+| 反馈字节 4-5 为实际电流 x10，单位 0.1A | 状态打印换算后的 `current=... mA` |
+| 反馈字节 6-7 为占空比 x1000 | 状态打印 `duty=...` |
+| RPM 命令为 `CAN_PACKET_SET_RPM = 3` | 已提供 `motor wheel rpm ...` |
+| ID100 的 RPM 命令扩展帧为 `0x364` | 可用 `motor wheel rpm right ...` 或 `motor can rawx can2 0x364 ...` |
+
+注意：`200 Hz` 回传频率必须在 VESC Tool 里设置并保存，C 板代码不能凭空让 VESC 改频率。当前代码用 `50 ms` 作为 VESC 反馈超时保护；如果 Status 1 是 200 Hz，正常 `age` 通常应小于 `20 ms`。
+
+按手册手动发 VESC 原始帧示例：
+
+```text
+# 右轮 ID100，目标 1000 ERPM
+motor can rawx can2 0x364 0 0 3 232 0 0 0 0
+
+# 左轮 ID101，目标 1000 ERPM
+motor can rawx can2 0x365 0 0 3 232 0 0 0 0
+```
+
+解释：`0x364 = (CAN_PACKET_SET_RPM 3 << 8) | 0x64`，`1000 = 0x000003E8 = 0 0 3 232`。
+
+## 16. VESC 电流反馈与力矩系数
+
+固件通过 VESC CAN Status 帧读取实时数据。当前读取的主要状态帧：
+
+| VESC 状态帧 | CAN packet | 固件读取内容 |
+| --- | --- | --- |
+| Status 1 | `CAN_PACKET_STATUS = 9` | ERPM、电机电流、duty |
+| Status 4 | `CAN_PACKET_STATUS_4 = 16` | 输入电流、FET 温度、电机温度 |
+| Status 5 | `CAN_PACKET_STATUS_5 = 27` | 输入电压、tachometer |
+
+状态字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `cmd` | F407 最近一次通过 CAN 发给 VESC 的电流命令 |
+| `motor_current` | VESC Status 1 回传的实测电机电流，用于力矩估算 |
+| `input` | VESC Status 4 回传的输入电流（电池侧），需要在 VESC Tool 开启 Status 4 |
+| `vin` | VESC Status 5 回传的输入电压，需要在 VESC Tool 开启 Status 5 |
+| `temp` | VESC Status 4 回传的 FET/电机温度 |
+| `tach` | VESC Status 5 回传的 tachometer |
+| `torque_k` | 当前固件用于该 VESC ID 的 `Nm/mA` 系数 |
+| `torque_est` | `motor_current * torque_k` 得到的轮端力矩估计 |
+| `duty` | VESC 占空比 |
+| `s4_age/s5_age` | Status 4/5 距离上次更新的时间，`-1ms` 表示还没有收到 |
+
+力矩系数计算：
+
+```text
+torque_k = Kt * reduction_ratio * gearbox_efficiency * 0.001
+```
+
+当前默认参数：
+
+```c
+#define APP_M3508_MOTOR_KT_NM_PER_A 0.180f
+#define APP_M3508_REDUCTION_RATIO 19.203208f
+#define APP_M3508_GEARBOX_EFFICIENCY 1.000f
+```
+
+即 `torque_k = 0.180 * 19.203208 * 1.000 * 0.001 = 0.003456577 Nm/mA`。这是理论值，适合先用于调试和模型初值。左右轮可以分别配置：
+
+```c
+#define APP_ASCENTO_LEFT_CURRENT_MA_TO_WHEEL_TORQUE_NM ...
+#define APP_ASCENTO_RIGHT_CURRENT_MA_TO_WHEEL_TORQUE_NM ...
+```
+
+VESC 上位机完成 FOC 检测后，`motor_current` 才能作为可信的电流反馈。
+
+## 17. 轮端力矩 Nm/mA 标定方案
+
+目标：测得或修正左右轮各自的 `Nm/mA` 系数。
+
+### 静态力臂测量法
+
+所需工具：弹簧秤/电子秤/拉力计、卷尺/游标卡尺、固定夹具/绳索。
+
+步骤：
+
+1. 测量力臂 r（轮胎有效半径，轮轴中心到轮胎外缘接地点距离，单位 m）。
+2. 在轮子外缘固定细绳，绳另一端接弹簧秤，弹簧秤另一端固定在机架上。
+3. 发送电流命令（如 `motor wheel current left 300 5000`），等电流稳定后记录弹簧秤读数。
+4. 至少 4 个电流档位（含正负），每档测 2-3 次取平均。
+5. 按公式计算：`τ (Nm) = F (N) × r (m)`，`k (Nm/mA) = τ / I_cmd`。
+6. 对所有有效 k 值取平均或线性回归，填入 `src/app_config.h`。
+
+注意事项：
+
+- VESC 默认有堵转检测，5000ms 超时足够读数。
+- 代码中电流调试限幅 2500 mA，测 1000 mA 以下足够。
+- 如果 F407 和 VESC Tool 测出的 k 值差异 > 5%，优先用 F407 的（平衡控制器走 F407 → CAN → VESC 路径）。
+- 左右轮可能因减速器个体差异有 2-5% 差异，建议分别标定。
+
+## 18. 串口终端使用
+
+串口设备（如 `/dev/ttyUSB0`）属于 `dialout` 组，当前用户需要加入该组：
+
+```bash
+sudo usermod -a -G dialout $USER
+```
+
+然后注销重新登录使其生效。临时可用 `newgrp dialout`。
+
+启动串口：
+
+```bash
+./scripts/serial.sh
+```
+
+默认自动查找 `/dev/serial/by-id/*` 下的设备，波特率 115200。也可手动指定：
+
+```bash
+./scripts/serial.sh /dev/ttyUSB0 115200
+```
+
+picocom 基本操作：直接打字发送，回车换行，`Ctrl+A` `Ctrl+X` 退出。
