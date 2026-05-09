@@ -26,7 +26,7 @@
    处理：
    - `sync_gain=0`
    - `k_yaw_rate=0`
-   - 修正 ID 100 右轮方向：右轮 `APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN=1`
+   - 修正 ID 100 右轮方向：右轮 `APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN=-1`
 
 4. 轮子力度不够
 

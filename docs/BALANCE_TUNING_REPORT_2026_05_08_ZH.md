@@ -50,8 +50,8 @@ pitch_error = pitch_rad - theta_eq
 |---------|------|------|
 | `APP_ASCENTO_IMU_PITCH_SIGN` | -1.0 | BMI088 正 pitch → 控制模型负 pitch |
 | `APP_ASCENTO_IMU_GY_SIGN` | +1.0 | BMI088 正 gx → 正 pitch rate |
-| `APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN` | -1 | VESC 负电流 → 左轮前进 |
-| `APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN` | +1 | VESC 正电流 → 右轮前进 |
+| `APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN` | +1 | VESC 正电流 → 左轮前进 |
+| `APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN` | -1 | VESC 负电流 → 右轮前进 |
 
 ### 2.3 恢复力矩方向推导
 
@@ -63,8 +63,8 @@ BMI088 pitch_deg > 0（前倾）
     → pitch_error = pitch_rad - theta_eq < 0（因为 pitch_rad 是负值，theta_eq 是正值）
     → K_pitch × pitch_error = (-3.0) × (负值) = 正值
     → balance_torque = -(正值) = 负值
-    → 左轮: apply_wheel_forward_sign(负值, -1) = 正值 → VESC 正电流 → 后退
-    → 右轮: apply_wheel_forward_sign(负值, +1) = 负值 → VESC 负电流 → 后退
+    → 左轮: apply_wheel_forward_sign(负值, +1) = 负值 → VESC 负电流 → 后退
+    → 右轮: apply_wheel_forward_sign(负值, -1) = 正值 → VESC 正电流 → 后退
     → 两轮后退 → 轮子移到质心下方 → 纠正前倾 ✓
 ```
 

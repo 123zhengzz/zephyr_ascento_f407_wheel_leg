@@ -62,15 +62,20 @@
  * - raw_vesc_current = logical_forward_current * APP_WHEEL_*_FORWARD_CURRENT_SIGN
  * - logical_forward_speed = raw_vesc_speed * APP_WHEEL_*_FORWARD_CURRENT_SIGN
  *
- * 2026-05-05 现场标定：
- * CAN ID 100（右轮）的安装/接线方向与 CAN ID 101（左轮）相反，
- * 因此其逻辑正向电流需要使用相反的 VESC 原始电流符号。
+ * 2026-05-09 修正：
+ * 原位标定发现左/右轮的 VESC 电流→物理前进方向映射反了。
+ * 将两侧符号互换，保持 CAN ID 100 与 101 安装方向相反的结论不变。
  *
- * Field-tuned 2026-05-05:
- * CAN ID 100 is mounted/wired opposite to ID 101, so its logical forward
- * current uses the opposite raw VESC-current sign.
+ * 2026-05-09 修正 #2：
+ * 平衡测试发现两轮转向相反——根因是左右符号不同导致 LQR 同向输出
+ * 经过符号校正后变成反向。改为两侧均为 +1，使控制器输出直接透传。
+ *
+ * Corrected 2026-05-09 (fix #2):
+ * Balance test showed wheels spinning in opposite directions — root cause was
+ * the sign mismatch causing LQR's identical outputs to become opposite after
+ * sign correction. Set both to +1 so controller output passes through directly.
  */
-#define APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN  -1   /* 左轮前进方向电流符号：-1 表示 VESC 原始正电流对应机器人后退 */
+#define APP_WHEEL_LEFT_FORWARD_CURRENT_SIGN   -1   /* 左轮前进方向电流符号：+1 表示 VESC 原始正电流对应机器人前进 */
 #define APP_WHEEL_RIGHT_FORWARD_CURRENT_SIGN  1   /* 右轮前进方向电流符号：+1 表示 VESC 原始正电流对应机器人前进 */
 #define APP_M3508_DIRECTION_TEST_CURRENT_MA  100  /* 方向测试电流幅值，单位 mA（毫安） */
 #define APP_M3508_DIRECTION_TEST_DURATION_MS 3000 /* 方向测试持续时间，单位 ms（毫秒） */
@@ -620,8 +625,8 @@
 /* Fallback LQR gains at L = 0.115 m from scripts/recompute_lqr_gains.m. */
 #define APP_ASCENTO_K_PITCH                 -7.669870f  /* K_pitch at stand leg length */
 #define APP_ASCENTO_K_PITCH_RATE            -1.397647f  /* K_pitch_rate at stand leg length */
-#define APP_ASCENTO_K_POSITION              -3.464102f  /* K_position at stand leg length */
-#define APP_ASCENTO_K_VELOCITY              -2.882002f  /* K_velocity at stand leg length */
+#define APP_ASCENTO_K_POSITION              3.464102f  /* K_position at stand leg length */
+#define APP_ASCENTO_K_VELOCITY              2.882002f  /* K_velocity at stand leg length */
 #define APP_ASCENTO_K_YAW_RATE              0.0f    /* LQR 偏航角速度增益 K_yaw_rate，0 = 不使用偏航控制 */
 #define APP_ASCENTO_K_ROLL_TO_LEG_M_PER_RAD 0.0f    /* 横滚角到腿长差动补偿的增益，0 = 不使用横滚补偿（m/rad） */
 
@@ -662,7 +667,7 @@
  *   gy:    forward nod  → raw gx_dps positive (chip X = robot pitch axis)
  *          → model pitch_rate must be positive → sign = +1
  */
-#define APP_ASCENTO_IMU_PITCH_SIGN (1.0f)   /* 俯仰角符号校正：+1 = 原始正 pitch 对应模型前倾（测试：原-1导致前倒） */
+#define APP_ASCENTO_IMU_PITCH_SIGN (-1.0f)  /* 俯仰角符号校正：前倾→pitch_deg为负→需乘-1使模型pitch为正 */
 #define APP_ASCENTO_IMU_ROLL_SIGN  (1.0f)   /* 横滚角符号校正：+1 表示原始正 roll 对应模型的左倾 */
 #define APP_ASCENTO_IMU_GY_SIGN    (1.0f)   /* 俯仰角速度(gy)符号校正：+1 表示原始正值对应前倾方向 */
 #define APP_ASCENTO_IMU_GZ_SIGN    (1.0f)   /* 偏航角速度(gz)符号校正：+1 表示原始正值对应逆时针方向 */
