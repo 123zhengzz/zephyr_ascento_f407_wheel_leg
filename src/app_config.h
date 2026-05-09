@@ -609,14 +609,14 @@
  *
  * TODO: make theta_eq a function of leg length L.
  */
-#define APP_ASCENTO_THETA_EQ_STAND_RAD 0.315f  /* 平衡俯仰角，单位 rad（20.1 度前倾，地面接触模式） */
+#define APP_ASCENTO_THETA_EQ_STAND_RAD 0.315f  /* 平衡俯仰角，单位 rad（18.0 度前倾，地面接触模式） */
 
 /* 活跃控制器使用的 LQR 固定增益默认值。 */
 /* Fixed gain defaults used by the active controller. */
-#define APP_ASCENTO_K_PITCH                -55.00f   /* LQR 俯仰角增益 K_pitch（Nm/rad） */
-#define APP_ASCENTO_K_PITCH_RATE           -18.00f   /* LQR 俯仰角速度增益 K_pitch_rate（Nm/(rad/s)）— 暂时关闭，避免对抗恢复力 */
-#define APP_ASCENTO_K_POSITION             0.25f   /* LQR 位置增益 K_position（Nm/m）— 暂时关闭 */
-#define APP_ASCENTO_K_VELOCITY             2.00f   /* LQR 速度增益 K_velocity（Nm/(m/s)）— 暂时关闭，避免对抗恢复力 */
+#define APP_ASCENTO_K_PITCH                -55.00f   /* LQR 俯仰角增益 K_pitch（Nm/rad）— 恢复力 */
+#define APP_ASCENTO_K_PITCH_RATE           -20.00f   /* LQR 俯仰角速度增益 K_pitch_rate（Nm/(rad/s)）— 增加阻尼ζ≈0.75 */
+#define APP_ASCENTO_K_POSITION             1.00f     /* LQR 位置增益 K_position（Nm/m）— 防止位置漂移 */
+#define APP_ASCENTO_K_VELOCITY             3.00f     /* LQR 速度增益 K_velocity（Nm/(m/s)）— 速度阻尼 */
 #define APP_ASCENTO_K_YAW_RATE              0.0f    /* LQR 偏航角速度增益 K_yaw_rate，0 = 不使用偏航控制 */
 #define APP_ASCENTO_K_ROLL_TO_LEG_M_PER_RAD 0.0f    /* 横滚角到腿长差动补偿的增益，0 = 不使用横滚补偿（m/rad） */
 
@@ -657,7 +657,7 @@
  *   gy:    forward nod  → raw gx_dps positive (chip X = robot pitch axis)
  *          → model pitch_rate must be positive → sign = +1
  */
-#define APP_ASCENTO_IMU_PITCH_SIGN (-1.0f)  /* 俯仰角符号校正：-1 表示原始正 pitch 对应模型的后倾 */
+#define APP_ASCENTO_IMU_PITCH_SIGN (1.0f)   /* 俯仰角符号校正：+1 = 原始正 pitch 对应模型前倾（测试：原-1导致前倒） */
 #define APP_ASCENTO_IMU_ROLL_SIGN  (1.0f)   /* 横滚角符号校正：+1 表示原始正 roll 对应模型的左倾 */
 #define APP_ASCENTO_IMU_GY_SIGN    (1.0f)   /* 俯仰角速度(gy)符号校正：+1 表示原始正值对应前倾方向 */
 #define APP_ASCENTO_IMU_GZ_SIGN    (1.0f)   /* 偏航角速度(gz)符号校正：+1 表示原始正值对应逆时针方向 */

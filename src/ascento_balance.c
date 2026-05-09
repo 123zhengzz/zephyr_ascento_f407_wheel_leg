@@ -1021,7 +1021,7 @@ void ascento_balance_update(ascento_balance_state_t *state,
 	const float pitch_rate_rad_s = APP_ASCENTO_IMU_GY_SIGN *
 				       app_lpf_update(input->imu.gx_dps * DEG_TO_RAD,
 						      &state->pitch_rate_lpf_rad_s,
-						      0.050f, dt_s);
+						      0.010f, dt_s);
 	/* 偏航角速率 [rad/s]：IMU 的 gz 分量对应偏航轴，经过低通滤波 */
 	const float yaw_rate_rad_s = APP_ASCENTO_IMU_GZ_SIGN *
 				     app_lpf_update(input->imu.gz_dps * DEG_TO_RAD,

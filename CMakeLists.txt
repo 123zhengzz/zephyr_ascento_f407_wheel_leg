@@ -9,6 +9,8 @@ target_include_directories(app PRIVATE src)
 
 target_sources(app PRIVATE
   src/main.c
+  src/leds.c
+  src/control_loop.c
   src/pid.c
   src/pid_balance_control.c
   src/ascento_balance.c
